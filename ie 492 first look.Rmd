@@ -1,0 +1,186 @@
+---
+title: "IE 492 MCP Firts Look"
+author: "Alican Yılmaz"
+date: "3/29/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r READ, warning=FALSE, message=FALSE}
+library('ggplot2')
+library('forecast')
+library('tseries')
+library("data.table")
+library("lubridate")
+library("zoo")
+library("plotly")
+```
+
+```{r}
+setwd("/Users/Alican/Desktop")
+mcp_raw = fread('MCP-01012017-29032021.csv', header=TRUE)
+mcp_raw[,Date:=as.Date(Date,"%d/%m/%Y")]
+```
+
+
+```{r}
+daily_MCP=mcp_raw[,list(daily_MCP=mean(`MCP (TL/MWh)`,na.rm=T)),by=list(Date)]
+```
+
+```{r}
+plt<-ggplot(daily_MCP, aes(Date, daily_MCP)) + geom_line()  + labs(x="Date",y="MCP TL/Mwh)",title="Daily Mean mcp")
+
+ggplotly(plt)
+```
+
+Variance not constant, there is trend for sure. Also, outliers exist. Transformation is necessary?
+
+Currency also has an effect maybe? (2018 Currency crisis)
+
+```{r acf/pacf}
+
+ggAcf(daily_MCP$daily_MCP, lag=48)
+
+
+```
+
+
+Seasonality at weekly level.
+
+
+
+```{r}
+# Plotting a portion of daily data
+ggplot(data = daily_MCP[1:28], aes(x = Date, y =daily_MCP )) +
+  geom_line(color = "darkred") +
+  labs(title = "Daily MCP(01.01.2017-28.01.2017) ",
+       x = "Date",
+       y= "MCP TL/(MWh)") +
+  scale_x_date(date_minor_breaks = "1 day", date_breaks = "2 days", date_labels = "%d %b") +
+  theme_minimal()
+```
+
+
+
+
+```{r}
+plt<-ggplot(data = mcp_raw[1:96], aes(x = index(mcp_raw[1:96]), y = `MCP (TL/MWh)` )) +
+  geom_line(color = "darkred") +
+  labs(title = "Hourly MCP(01.01.2017-04.01.2017) ",
+       x = "Date",
+       y= "MCP TL/(MWh)") +
+  theme_minimal()
+ggplotly(plt)
+```
+
+
+There seems to be a seasonality at hourly level.
+
+```{r ACF/PACF}
+ggAcf(mcp_raw$`MCP (TL/MWh)`, lag=72)
+
+```
+
+Daily seasonality.
+
+Weekends & holidays might affect.(But weekends might be redundant if weekly seasonality is put as input.)
+Electricity Demand
+Electricity Load
+Temperature
+Available capacity
+Codes of Days
+Supply & Demand of Electricity(Only shows one hour. How to download all?)
+Weather conditions & Fuel Prices
+
+```{r Data manipulation weekend and day code is added}
+mcp_raw$day <- weekdays(as.Date(mcp_raw$Date))
+mcp_raw$IsWeekend <- mcp_raw$day %in% c("Saturday","Sunday")
+mcp_raw<-transform(mcp_raw ,IsWeekend = ifelse(mcp_raw$day %in% c("Saturday","Sunday") ,1,0 ))
+
+```
+
+
+# Web Scraping For Fuel Prices
+
+```{r Fuel Prices in Turkey}
+#install.packages("rvest")
+#install.packages("dplyr")
+library(rvest)
+library(dplyr)
+```
+
+
+```{r}
+link="https://www.tppd.com.tr/en/former-oil-prices?id=34&county=413&StartDate=01.01.2017&EndDate=29.03.2021"
+page=read_html(link)
+
+date<-page %>% html_nodes("td:nth-child(1)") %>% html_text()
+fuel_price<-as.numeric(page %>% html_nodes("td:nth-child(6)") %>% html_text())
+fuel_price_df<-data.frame(date,fuel_price,stringsAsFactors = FALSE)
+fuel_price_df$date<-as.Date(fuel_price_df$date, format =  "%d %B %Y")
+```
+
+Some of the days are missing. We could interpolate them?
+
+
+## ARIMA: Benchmark Purposes
+
+Box-Jenkins Methodology will be used:
+
+```{r}
+adf.test(mcp_raw$`MCP (TL/MWh)`)
+```
+
+Data is stationary at 0.01 significance level.
+
+```{r}
+ggAcf(mcp_raw$`MCP (TL/MWh)`,lag.max = 168)
+```
+
+```{r}
+ggPacf(mcp_raw$`MCP (TL/MWh)`,lag.max = 168)
+
+```
+
+
+We know that there is weekly seasonality from the daily plot.
+
+```{r}
+daily_mcp_ts<-ts(daily_MCP$daily_MCP,frequency = 7)
+fitted<-auto.arima(daily_mcp_ts,seasonal=TRUE,trace = TRUE)
+fitted
+```
+
+
+```{r}
+daily_mcp_ts<-ts(daily_MCP$daily_MCP,frequency = 7)
+fitted<-arima(daily_mcp_ts,order=c(3,1,1),seasonal=c(2,0,0))
+fitted
+```
+
+ARIMA(3,1,1)(2,0,0)[7] I want to fit hourly version of this. # freq=24 yaz.
+
+OR
+
+Model each hour seperately.
+
+
+
+## MAPE 
+
+For one week:
+
+Train: 2017-2020
+Test: 3 Week
+
+```{r}
+# Error test
+```
+
+
+
