@@ -1,0 +1,312 @@
+---
+title: "IE 492 MCP First Look"
+author: "Alican Yılmaz"
+date: "3/29/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+## R Markdown
+
+```{r READ, warning=FALSE, message=FALSE}
+library('ggplot2')
+library('forecast')
+library('tseries')
+library("data.table")
+library("lubridate")
+library("zoo")
+library("plotly")
+```
+
+```{r}
+setwd("/Users/Alican/Desktop")
+
+```
+```{r}
+mcp_raw = fread('MCP-01012017-29032021.csv', header=TRUE)
+mcp_raw[,Date:=as.Date(Date,"%d/%m/%Y")]
+```
+
+
+```{r}
+daily_MCP=mcp_raw[,list(daily_MCP=mean(`MCP (TL/MWh)`,na.rm=T)),by=list(Date)]
+```
+
+```{r}
+plt<-ggplot(daily_MCP, aes(Date, daily_MCP)) + geom_line()  + labs(x="Date",y="MCP TL/Mwh)",title="Daily Mean mcp")
+
+ggplotly(plt)
+```
+
+Variance not constant, there is trend for sure. Also, outliers exist. Transformation is necessary?
+
+Currency also has an effect maybe? (2018 Currency crisis)
+
+```{r acf/pacf}
+
+ggAcf(daily_MCP$daily_MCP, lag=48)
+
+
+```
+
+
+Seasonality at weekly level.
+
+
+
+```{r}
+# Plotting a portion of daily data
+ggplot(data = daily_MCP[1:28], aes(x = Date, y =daily_MCP )) +
+  geom_line(color = "darkred") +
+  labs(title = "Daily MCP(01.01.2017-28.01.2017) ",
+       x = "Date",
+       y= "MCP TL/(MWh)") +
+  scale_x_date(date_minor_breaks = "1 day", date_breaks = "2 days", date_labels = "%d %b") +
+  theme_minimal()
+```
+
+
+
+
+```{r}
+plt<-ggplot(data = mcp_raw[1:96], aes(x = index(mcp_raw[1:96]), y = `MCP (TL/MWh)` )) +
+  geom_line(color = "darkred") +
+  labs(title = "Hourly MCP(01.01.2017-04.01.2017) ",
+       x = "Date",
+       y= "MCP TL/(MWh)") +
+  theme_minimal()
+ggplotly(plt)
+```
+
+
+There seems to be a seasonality at hourly level.
+
+```{r ACF/PACF}
+ggAcf(mcp_raw$`MCP (TL/MWh)`, lag=72)
+
+```
+
+Daily seasonality.
+
+Weekends & holidays might affect.(But weekends might be redundant if weekly seasonality is put as input.)
+Electricity Demand
+Electricity Load
+Temperature
+Available capacity
+Codes of Days
+Supply & Demand of Electricity(Only shows one hour. How to download all?)
+Weather conditions & Fuel Prices
+
+```{r Data manipulation weekend and day code is added}
+mcp_raw$day <- weekdays(as.Date(mcp_raw$Date))
+mcp_raw$IsWeekend <- mcp_raw$day %in% c("Saturday","Sunday")
+mcp_raw<-transform(mcp_raw ,IsWeekend = ifelse(mcp_raw$day %in% c("Saturday","Sunday") ,1,0 ))
+
+```
+
+
+# Web Scraping For Fuel Prices
+
+```{r Fuel Prices in Turkey}
+#install.packages("rvest")
+#install.packages("dplyr")
+library(rvest)
+library(dplyr)
+```
+
+
+```{r}
+link="https://www.tppd.com.tr/en/former-oil-prices?id=34&county=413&StartDate=01.01.2017&EndDate=29.03.2021"
+page=read_html(link)
+
+date<-page %>% html_nodes("td:nth-child(1)") %>% html_text()
+fuel_price<-as.numeric(page %>% html_nodes("td:nth-child(6)") %>% html_text())
+fuel_price_df<-data.frame(date,fuel_price,stringsAsFactors = FALSE)
+fuel_price_df$date<-as.Date(fuel_price_df$date, format =  "%d %B %Y")
+```
+
+
+Some of the days are missing. We could interpolate them
+
+```{r interpolating missing values of fuel prices}
+
+ApproxFun <- approxfun(x = fuel_price_df$date, y = fuel_price_df$fuel_price)
+Dates<-seq.Date(ymd("2017-01-01"),ymd("2021-04-09"),by=1)
+LinearFit <- ApproxFun(Dates)
+
+
+full_fuel_price_df<-data.frame(Date = Dates, fUEL_pRICE = LinearFit)
+
+full_fuel_price_df<-full_fuel_price_df[full_fuel_price_df$Date<"2021-03-30",]
+
+```
+
+
+
+
+## ARIMA: Benchmark Purposes
+
+Box-Jenkins Methodology will be used:
+
+```{r}
+adf.test(mcp_raw$`MCP (TL/MWh)`)
+```
+
+Data is stationary at 0.01 significance level.
+
+```{r}
+ggAcf(mcp_raw$`MCP (TL/MWh)`,lag.max = 168)
+```
+
+```{r}
+ggPacf(mcp_raw$`MCP (TL/MWh)`,lag.max = 168)
+
+```
+
+
+
+```{r}
+BoxCox.lambda(daily_MCP$`MCP (TL/MWh)`)
+```
+
+Lambda is close to 1, so no need transformation.
+
+
+
+
+
+
+We know that there is weekly seasonality from the daily plot.
+
+```{r}
+daily_mcp_ts<-ts(daily_MCP$daily_MCP,frequency = 7)
+fitted<-auto.arima(daily_mcp_ts,seasonal=TRUE,trace = TRUE)
+checkresiduals(fitted)
+```
+
+
+```{r}
+daily_mcp_ts<-ts(daily_MCP$daily_MCP,frequency = 7)
+fitted<-arima(daily_mcp_ts,order=c(1,1,1),seasonal=c(2,0,0))
+ggtsdisplay(fitted$residuals)
+checkresiduals(fitted)
+library(lmtest)
+coeftest(fitted)
+```
+
+Model each hour separately for benchmark purpose.
+
+
+
+## MAPE 
+
+For one week:
+
+Train: 2017-2020
+Test: 3 Week
+
+```{r}
+# Error test
+```
+
+## DATA COLLECTING & RELATIONSHIP TESTING
+
+HYPOTHESIS: ELECTRICITY DEMAND SIGNIFICANTLY AFFECTS MCP
+
+### Getting Electricity Demand Data
+
+```{r}
+
+electricity_demand_df<-fread('RealTimeConsumption-01012017-12042021.csv', header=TRUE)
+electricity_demand_df[,Date:=as.Date(Date,"%d.%m.%Y")]
+electricity_demand_df[,`Consumption (MWh)`:=as.numeric(gsub(",", "", `Consumption (MWh)`))]
+electricity_demand_df<-electricity_demand_df[Date<="2021-03-29",]
+
+```
+
+
+
+```{r creating data_frame includes all variables}
+whole_Data<-mcp_raw
+whole_Data$electricity_consumption<-electricity_demand_df$`Consumption (MWh)`
+```
+
+### Plotting Demand vs Price Relationship
+
+```{r}
+ggplot(whole_Data[Date<="2017-06-01",],aes(x=electricity_consumption, y =`MCP (TL/MWh)`))+
+geom_point()+geom_smooth(method=lm)
+```
+
+
+
+Plotting at daily level, for each hour separately:
+
+```{r}
+ggplot(whole_Data,aes(x=electricity_consumption, y =`MCP (TL/MWh)`))+
+geom_point()+geom_smooth(method=lm)+
+  facet_wrap(vars(Hour))
+```
+
+### Regression Model for Electricity Demand
+
+
+
+```{r}
+lmMCP = lm(`MCP (TL/MWh)`~electricity_consumption, data = whole_Data) #Create the linear regression
+summary(lmMCP) #Review the results
+```
+
+we can say that electricity consumption is statistically significant.However, R-square is quite low, meaning that variance can not be explained simply by consumption.
+
+```{r}
+ggtsdisplay(lmMCP$residuals)
+```
+
+
+This allows you to polynomial regression model of degree 3 of x
+
+
+```{r}
+model <- lm(y ~ poly(x,3))
+```
+
+
+### Fuel_Prices vs MCP
+
+
+```{r}
+whole_Data_daily<-whole_Data %>%
+  group_by(Date)
+whole_Data_daily<-whole_Data_daily%>% summarise(
+  mcp=mean(`MCP (TL/MWh)`))
+whole_Data_daily$fuelprice<-full_fuel_price_df$fUEL_pRICE  
+
+```
+
+
+
+```{r}
+whole_Data_daily%>%
+  ggplot(.,aes(x=fuelprice,y=mcp))+
+  geom_point()+geom_smooth(method=lm)
+```
+
+### Regression Model for Electricity Demand
+
+
+
+```{r}
+lmMCP = lm(mcp~fuelprice, data = whole_Data_daily) #Create the linear regression
+summary(lmMCP) #Review the results
+```
+
+Statistically significant. But R^2 could be improved still.
+
+
+
+
