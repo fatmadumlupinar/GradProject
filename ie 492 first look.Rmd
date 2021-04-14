@@ -1,5 +1,5 @@
 ---
-title: "IE 492 MCP Firts Look"
+title: "IE 492 MCP First Look"
 author: "Alican Yılmaz"
 date: "3/29/2021"
 output: html_document
@@ -7,6 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
 ```
 
 ## R Markdown
@@ -23,6 +24,9 @@ library("plotly")
 
 ```{r}
 setwd("/Users/Alican/Desktop")
+
+```
+```{r}
 mcp_raw = fread('MCP-01012017-29032021.csv', header=TRUE)
 mcp_raw[,Date:=as.Date(Date,"%d/%m/%Y")]
 ```
@@ -125,7 +129,23 @@ fuel_price_df<-data.frame(date,fuel_price,stringsAsFactors = FALSE)
 fuel_price_df$date<-as.Date(fuel_price_df$date, format =  "%d %B %Y")
 ```
 
-Some of the days are missing. We could interpolate them?
+
+Some of the days are missing. We could interpolate them
+
+```{r interpolating missing values of fuel prices}
+
+ApproxFun <- approxfun(x = fuel_price_df$date, y = fuel_price_df$fuel_price)
+Dates<-seq.Date(ymd("2017-01-01"),ymd("2021-04-09"),by=1)
+LinearFit <- ApproxFun(Dates)
+
+
+full_fuel_price_df<-data.frame(Date = Dates, fUEL_pRICE = LinearFit)
+
+full_fuel_price_df<-full_fuel_price_df[full_fuel_price_df$Date<"2021-03-30",]
+
+```
+
+
 
 
 ## ARIMA: Benchmark Purposes
@@ -148,26 +168,37 @@ ggPacf(mcp_raw$`MCP (TL/MWh)`,lag.max = 168)
 ```
 
 
+
+```{r}
+BoxCox.lambda(daily_MCP$`MCP (TL/MWh)`)
+```
+
+Lambda is close to 1, so no need transformation.
+
+
+
+
+
+
 We know that there is weekly seasonality from the daily plot.
 
 ```{r}
 daily_mcp_ts<-ts(daily_MCP$daily_MCP,frequency = 7)
 fitted<-auto.arima(daily_mcp_ts,seasonal=TRUE,trace = TRUE)
-fitted
+checkresiduals(fitted)
 ```
 
 
 ```{r}
 daily_mcp_ts<-ts(daily_MCP$daily_MCP,frequency = 7)
-fitted<-arima(daily_mcp_ts,order=c(3,1,1),seasonal=c(2,0,0))
-fitted
+fitted<-arima(daily_mcp_ts,order=c(1,1,1),seasonal=c(2,0,0))
+ggtsdisplay(fitted$residuals)
+checkresiduals(fitted)
+library(lmtest)
+coeftest(fitted)
 ```
 
-ARIMA(3,1,1)(2,0,0)[7] I want to fit hourly version of this. # freq=24 yaz.
-
-OR
-
-Model each hour seperately.
+Model each hour separately for benchmark purpose.
 
 
 
@@ -182,5 +213,183 @@ Test: 3 Week
 # Error test
 ```
 
+## DATA COLLECTING & RELATIONSHIP TESTING
 
+HYPOTHESIS: ELECTRICITY DEMAND SIGNIFICANTLY AFFECTS MCP
+
+### Getting Electricity Demand Data
+
+```{r}
+
+electricity_demand_df<-fread('RealTimeConsumption-01012017-12042021.csv', header=TRUE)
+electricity_demand_df[,Date:=as.Date(Date,"%d.%m.%Y")]
+electricity_demand_df[,`Consumption (MWh)`:=as.numeric(gsub(",", "", `Consumption (MWh)`))]
+electricity_demand_df<-electricity_demand_df[Date<="2021-03-29",]
+
+```
+
+
+
+```{r creating data_frame includes all variables}
+whole_Data<-mcp_raw
+whole_Data$electricity_consumption<-electricity_demand_df$`Consumption (MWh)`
+```
+
+### Plotting Demand vs Price Relationship
+
+```{r}
+ggplot(whole_Data[Date<="2017-06-01",],aes(x=electricity_consumption, y =`MCP (TL/MWh)`))+
+geom_point()+geom_smooth(method=lm)
+```
+
+
+
+Plotting at daily level, for each hour separately:
+
+```{r}
+ggplot(whole_Data,aes(x=electricity_consumption, y =`MCP (TL/MWh)`))+
+geom_point()+geom_smooth(method=lm)+
+  facet_wrap(vars(Hour))
+```
+
+### Regression Model for Electricity Demand
+
+
+
+```{r}
+lmMCP = lm(`MCP (TL/MWh)`~electricity_consumption, data = whole_Data) #Create the linear regression
+summary(lmMCP) #Review the results
+```
+
+we can say that electricity consumption is statistically significant.However, R-square is quite low, meaning that variance can not be explained simply by consumption.
+
+```{r}
+ggtsdisplay(lmMCP$residuals)
+```
+
+
+This allows you to polynomial regression model of degree 3 of x
+
+
+```{r}
+model <- lm(y ~ poly(x,3))
+```
+
+
+### Fuel_Prices vs MCP
+
+
+```{r}
+whole_Data_daily<-whole_Data %>%
+  group_by(Date)
+whole_Data_daily<-whole_Data_daily%>% summarise(
+  mcp=mean(`MCP (TL/MWh)`))
+whole_Data_daily$fuelprice<-full_fuel_price_df$fUEL_pRICE  
+
+```
+
+
+
+```{r}
+whole_Data_daily%>%
+  ggplot(.,aes(x=fuelprice,y=mcp))+
+  geom_point()+geom_smooth(method=lm)
+```
+
+### Regression Model for Electricity Demand
+
+
+
+```{r}
+lmMCP = lm(mcp~fuelprice, data = whole_Data_daily) #Create the linear regression
+summary(lmMCP) #Review the results
+```
+
+Statistically significant. But R^2 could be improved still.
+
+## Hydro Production Analysis
+
+Hypothesis: Real Time Hydro Production has an effect on MCP
+
+### Getting Data
+
+
+```{r}
+production = fread('RealTimeGeneration-01012017-14032021.csv', header=TRUE)
+production[,Date:=as.Date(Date,"%d.%m.%Y")]
+production[,3:18] <- lapply(production[,3:18], function(x) as.numeric(gsub(",", "", x)))
+
+```
+
+
+```{r}
+df<-whole_Data[Date<="2021-03-13",]
+df$Dammed_Hydro_pr<-production[Date<="2021-03-13",`Dammed Hydro`]
+```
+
+
+
+```{r}
+df%>%
+  ggplot(.,aes(x=Dammed_Hydro_pr,y=`MCP (TL/MWh)`))+
+  geom_point()+geom_smooth(method=lm)
+```
+
+
+```{r}
+df%>%
+  ggplot(.,aes(x=Dammed_Hydro_pr,y=`MCP (TL/MWh)`))+
+  geom_point()+geom_smooth(method=lm) +facet_wrap(vars(Hour))
+```
+
+
+It is hard to tell the effect of dammed hydro production on MCP as it is hour dependent.
+
+```{r}
+lmMCP = lm(`MCP (TL/MWh)`~Dammed_Hydro_pr, data = df) #Create the linear regression
+summary(lmMCP) #Review the results
+```
+
+R^2 is almost zero. 
+
+
+
+## Bilateral Contracts
+
+Hypothesis: Bilateral Contracts Total Bid Quantity has an effect on price.
+
+```{r}
+Bilateral_df = fread('BilateralContractsBid-01012017-29032021.csv', header=TRUE)
+Bilateral_df[,Date:=as.Date(Date,"%d/%m/%Y")]
+Bilateral_df[,3] <- lapply(Bilateral_df[,3], function(x) as.numeric(gsub(",", "", x)))
+```
+
+```{r}
+whole_Data$'bilateral(MWh)'<-Bilateral_df[,3]
+
+
+whole_Data[Date>="2020-01-01",]%>%
+  ggplot(.,aes(x=`bilateral(MWh)`,y=`MCP (TL/MWh)`))+
+  geom_point()+geom_smooth(method=lm)
+
+
+```
+
+
+
+
+```{r}
+lmMCP = lm(`MCP (TL/MWh)`~`bilateral(MWh)`, data = whole_Data[Date>="2020-01-01",]) #Create the linear regression
+summary(lmMCP) #Review the results
+```
+
+# Corrplot
+
+```{r}
+library(corrplot)
+
+M<-cor(whole_Data[,c(3,8,9)])
+
+corrplot(M, method="number")
+```
 
