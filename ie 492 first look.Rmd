@@ -6,7 +6,9 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+
+knitr::opts_knit$set(root.dir ="/Users/Alican/Documents/Github/ie492-/Datasets" )
+ #setwd("/Users/Alican/Documents/Github/ie492-/Datasets")
 
 ```
 
@@ -22,11 +24,9 @@ library("zoo")
 library("plotly")
 ```
 
-```{r}
-setwd("/Users/Alican/Desktop")
 
-```
 ```{r}
+
 mcp_raw = fread('MCP-01012017-29032021.csv', header=TRUE)
 mcp_raw[,Date:=as.Date(Date,"%d/%m/%Y")]
 ```
@@ -272,7 +272,7 @@ This allows you to polynomial regression model of degree 3 of x
 
 
 ```{r}
-model <- lm(y ~ poly(x,3))
+#model <- lm(y ~ poly(x,3))
 ```
 
 
@@ -388,8 +388,121 @@ summary(lmMCP) #Review the results
 ```{r}
 library(corrplot)
 
-M<-cor(whole_Data[,c(3,8,9)])
+M<-cor(whole_Data[,c(3,8)])
 
 corrplot(M, method="number")
 ```
+
+## Installed Capacity vs MCP
+
+```{r}
+capacity=fread("EAK-01012017-29032021.csv",header=TRUE)
+capacity[,Date:=as.Date(Date,"%d.%m.%Y")]
+
+capacity[,`Total (MWh)`:=as.numeric(gsub(",", "",`Total (MWh)`))]
+head(capacity)
+  
+```
+
+
+```{r}
+whole_Data$InstalledCapacity<-capacity$`Total (MWh)`
+head(whole_Data)
+```
+
+```{r}
+whole_Data%>%
+  ggplot(.,aes(x=InstalledCapacity,y=`MCP (TL/MWh)`))+
+  geom_point()+geom_smooth(method=lm) #+facet_wrap(vars(Hour))
+```
+
+
+```{r}
+whole_Data %>%
+  group_by(Date)%>%
+  summarise(
+    daily_MCP = sum(`MCP (TL/MWh)`),
+  daily_capacity = sum(InstalledCapacity))%>%
+  ggplot(.,aes(x=daily_capacity,y=daily_MCP))+
+  geom_point()+geom_smooth(method=lm)
+```
+
+
+```{r}
+model <- lm(`MCP (TL/MWh)_sum` ~ poly(InstalledCapacity_sum,3),data=daily_whole_data)
+summary(model)
+plot(fitted(model),residuals(model))
+```
+
+
+
+## Agraggate Daily Data
+
+```{r}
+daily_whole_data
+```
+
+
+
+## Daily Mean Electricity Consumption Data
+
+
+```{r}
+daily_whole_data<-whole_Data %>% 
+  group_by(Date) %>% 
+  summarise(across(where(is.numeric), list(mean = mean, sum = sum)))
+```
+
+
+## Outlier Analysis
+
+
+
+```{r}
+daily_whole_data%>%
+  ggplot(.,aes(x=Date,y=`MCP (TL/MWh)_mean`))+
+  geom_line(color = "darkred") +
+  labs(title = "Daily MCP",
+       x = "Date",
+       y= "MCP TL/(MWh)") +
+  theme_minimal()
+```
+
+## Daily Hydro Production
+
+```{r}
+df_aggregated<-df%>% 
+  group_by(Date) %>% 
+  summarise(across(where(is.numeric), list(mean = mean, sum = sum)))
+df_aggregated
+```
+
+```{r}
+df_aggregated%>%ggplot(.,aes(x=`Dammed_Hydro_pr_sum`,y=`MCP (TL/MWh)_sum`))+
+  geom_point()+geom_smooth(method=lm)
+```
+
+
+
+```{r}
+a<-ts(df_aggregated$`MCP (TL/MWh)_mean`)
+b<-ts(ts(df_aggregated$Dammed_Hydro_pr_mean))
+
+autoplot(cbind(a,b),facets=TRUE)
+```
+
+
+```{r}
+library(corrplot)
+
+M<-cor(df_aggregated[,c(2,10)])
+
+corrplot(M, method="number")
+```
+
+
+
+
+
+
 
