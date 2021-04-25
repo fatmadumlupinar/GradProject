@@ -8,9 +8,15 @@ library(zoo)
 library(readxl)
 library(corrplot)
 library(data.table)
+library(ggcorrplot)
+library(Metrics)
+library(lmtest) #for granger causality test
+library(rvest)
 
 #data
 
+
+###############################################################################
 gasPrice=read.csv("data/Balancing_Gas_Price%28BGP%29_2018-09-01_2021-04-12.csv")
 gasPrice=gasPrice%>%
   mutate(TSO.Purchase.Price=as.numeric(gsub(",","",TSO.Purchase.Price)),
@@ -181,8 +187,17 @@ Load=Load%>%
   mutate(Date=as.Date(Date, "%d/%m/%Y"),
          Hour=as.numeric(gsub(":00$","",Hour)),
          `Load Forecast (MWh)`=as.numeric(gsub(",","",`Load Forecast (MWh)`)))
-         
+
 merged=full_join(merged,Load,by = c("Date","Hour"))
+
+
+fuelPrices=read.csv("data/FUELPRICES.csv")
+fuelPrices=fuelPrices%>%
+  mutate(Date=as.Date(Date,"%Y-%m-%d"))%>%
+  rename(fuelPrice=fUEL_pRICE)
+fuelPrices=fuelPrices[-1]
+
+merged=full_join(merged,fuelPrices,by = c("Date"))
 
 
 merged=merged%>%
@@ -191,41 +206,39 @@ merged=merged%>%
          MCP_lag168=lag(MCP..TL.MWh.,168))
 
 
-merged2018=merged%>%filter(Date>="2018-09-01")
+merged=merged%>%mutate(`BilateralCQ/Consumption`=Quantity..MWh./`Consumption (MWh)`,
+                       `Generation/Consumption`=`G.Total (MWh)`/`Consumption (MWh)`,
+                       GProportion.NatGas=`G.Natural Gas`/`G.Total (MWh)`,
+                       GProportion.DammedH=`G.Dammed Hydro`/`G.Total (MWh)`,
+                       GProportion.Lignite=G.Lignite/`G.Total (MWh)`,
+                       GProportion.River=G.River/`G.Total (MWh)`,
+                       GProportion.ImportC=`G.Import Coal`/`G.Total (MWh)`,
+                       GProportion.Wind=G.Wind/`G.Total (MWh)`,
+                       GProportion.Solar=G.Solar/`G.Total (MWh)`,
+                       GProportion.FuelOil=`G.Fuel Oil`/`G.Total (MWh)`,
+                       GProportion.Geot=G.Geothermal/`G.Total (MWh)`,
+                       GProportion.AsphalC=`G.Asphaltite Coal`/`G.Total (MWh)`,
+                       GProportion.BlackC=`G.Black Coal`/`G.Total (MWh)`,
+                       GProportion.Biomass=G.Biomass/`G.Total (MWh)`,
+                       GProportion.Naphta=G.Naphta/`G.Total (MWh)` ,
+                       GProportion.LNG=G.LNG/`G.Total (MWh)` ,
+                       GProportion.ImportExport=`G.Import-Export` /`G.Total (MWh)`)
 
-for (i in 3:28){
-  plot(ts(merged2018[,i],frequency = 24),
-       ylab=colnames(merged2018[i]))
-}
 
-merged2018=merged2018%>%select(-c("Weighted.Average.Price",
-                       "After.Day.Price..ADP.",
-                       "Intraday.Price..IDP.",
-                       "Day.Ahead.Price..DAP.",
-                       "Max..Exit.Amount.Sm3."))
 
 merged=merged%>%select(-c("Weighted.Average.Price",
-                                  "After.Day.Price..ADP.",
-                                  "Intraday.Price..IDP.",
-                                  "Day.Ahead.Price..DAP.",
-                                  "Max..Exit.Amount.Sm3."))
+                          "After.Day.Price..ADP.",
+                          "Intraday.Price..IDP.",
+                          "Day.Ahead.Price..DAP.",
+                          "Max..Exit.Amount.Sm3."))
 
-merged2018_complete<-merged2018[complete.cases(merged2018), ]
+merged=merged[,-c(4,5)]
 
-corrplot(cor(merged2018[,c(5:9)],use = "complete.obs"), method="number",tl.srt=45)
+merged2018=merged%>%filter(Date>="2018-09-01")
 
-cor(merged2018[,5:15],use = "complete.obs")
+merged2019=merged2018%>%filter(Date>="2019-01-02")
 
-
+str(merged)
 #write.csv(merged, file = "merged.csv")
-
-
-
-
-
-
-
-
-
-
-
+#write.csv(merged2018, file = "merged2018.csv")
+#write.csv(merged2019, file = "merged2019.csv")
