@@ -12,6 +12,7 @@ library(ggcorrplot)
 library(Metrics)
 library(lmtest) #for granger causality test
 library(rvest)
+library(vars)
 
 #data
 
@@ -113,12 +114,13 @@ stockAmount=stockAmount%>%
 merged=full_join(merged,stockAmount,by = c("Date"="Gas.Day"))
 
 exRate=read_excel("data/TL-EURO.xlsx")
+str(exRate)
 exRate=exRate%>%
   mutate(Date=as.Date(Tarih,"%d-%m-%Y"),
          USD.TL=as.numeric(`TP DK USD A YTL`),
-         EUR.TL=as.numeric(`TP DK EUR A YTL`))%>%
-  select(Date,USD.TL,EUR.TL)
+         EUR.TL=as.numeric(`TP DK EUR A YTL`))
 
+exRate=exRate[4:6]
 merged=full_join(merged,exRate,by = c("Date"))
 
 
@@ -225,20 +227,13 @@ merged=merged%>%mutate(`BilateralCQ/Consumption`=Quantity..MWh./`Consumption (MW
                        GProportion.ImportExport=`G.Import-Export` /`G.Total (MWh)`)
 
 
+merged=merged[-c(4,5,8,19:22,41,42,76,77)]
 
-merged=merged%>%select(-c("Weighted.Average.Price",
-                          "After.Day.Price..ADP.",
-                          "Intraday.Price..IDP.",
-                          "Day.Ahead.Price..DAP.",
-                          "Max..Exit.Amount.Sm3."))
-
-merged=merged[,-c(4,5)]
 
 merged2018=merged%>%filter(Date>="2018-09-01")
 
 merged2019=merged2018%>%filter(Date>="2019-01-02")
 
-str(merged)
 #write.csv(merged, file = "merged.csv")
 #write.csv(merged2018, file = "merged2018.csv")
 #write.csv(merged2019, file = "merged2019.csv")
