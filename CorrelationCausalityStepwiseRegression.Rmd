@@ -1,0 +1,86 @@
+---
+title: "CorrelationCausalityStepwiseRegression"
+author: "Fatma Nur Dumlupınar"
+date: "26 04 2021"
+output: html_document
+---
+
+```{r message=FALSE, warning=FALSE}
+setwd("C:/Users/fatma/Desktop/IE 492")
+
+```
+
+```{r message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(ggcorrplot)
+library(vars)
+
+merged2019=read.csv("merged2019.csv")
+merged2019=merged2019[-1]
+merged2019$Date=as.Date(merged2019$Date,format="%Y-%m-%d")
+merged2019=merged2019[-c(14,15)]
+```
+# Correlation
+
+```{r message=FALSE, warning=FALSE}
+## Correlation Matices
+
+corr=cor(merged2019[3:65],use = "complete.obs")
+
+ggcorrplot(round(corr,1),  type = "lower",tl.cex =7, tl.srt = 90,
+           hc.order = TRUE,
+           title="Correlation Matrix of All Features")
+
+# only with proportions (without generation values )
+corr=cor(merged2019[c(3:20,33:65)],use = "complete.obs")
+
+ggcorrplot(round(corr,1),  type = "lower",tl.cex =8, tl.srt = 90,
+           hc.order = TRUE,
+           title="Correlation Matrix without Generation Values (With Proportions)")
+
+
+```
+
+# Causality
+
+```{r message=FALSE, warning=FALSE}
+##CAUSALITY
+
+#H0: There is not causality
+
+for (i in c(3:12, 14:65)){
+  print(grangertest(as.formula(paste0("MCP..TL.MWh.", "~`",
+                                      paste(colnames(merged2019)[i]),"`")),
+                    na.action=na.omit,
+                    order = 3, 
+                    data = merged2019))
+}
+```
+
+# Stepwise Regression
+
+```{r message=FALSE, warning=FALSE}
+################## Linearity, Stepwise Regression
+
+# Linearity 
+
+for (i in c(3:12, 14:65)){
+  print(summary(lm(as.formula(paste0("MCP..TL.MWh.", "~`",
+                                      paste(colnames(merged2019)[i]),"`")),
+                    data = merged2019)
+  )
+        )
+}
+
+##stepwise regression 
+
+summary(lm <- lm(MCP..TL.MWh. ~ .-Date-Hour, data = merged2019))
+
+slm <- step(lm,direction = "both")
+summary(slm)
+
+slm$anova
+
+```
+
