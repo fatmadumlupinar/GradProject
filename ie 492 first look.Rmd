@@ -7,7 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 
-knitr::opts_knit$set(root.dir ="/Users/Alican/Documents/Github/ie492-/Datasets" )
+knitr::opts_chunk$set(echo = TRUE)
  #setwd("/Users/Alican/Documents/Github/ie492-/Datasets")
 
 ```
@@ -428,19 +428,13 @@ whole_Data %>%
 ```
 
 
-```{r}
-model <- lm(`MCP (TL/MWh)_sum` ~ poly(InstalledCapacity_sum,3),data=daily_whole_data)
-summary(model)
-plot(fitted(model),residuals(model))
-```
+
 
 
 
 ## Agraggate Daily Data
 
-```{r}
-daily_whole_data
-```
+
 
 
 
@@ -453,7 +447,11 @@ daily_whole_data<-whole_Data %>%
   summarise(across(where(is.numeric), list(mean = mean, sum = sum)))
 ```
 
-
+```{r}
+model <- lm(`MCP (TL/MWh)_sum` ~ poly(InstalledCapacity_sum,3),data=daily_whole_data)
+summary(model)
+plot(fitted(model),residuals(model))
+```
 ## Outlier Analysis
 
 
@@ -502,7 +500,185 @@ corrplot(M, method="number")
 
 
 
+```{r}
+df_hydro<-df_aggregated[,c("MCP (TL/MWh)_mean","Dammed_Hydro_pr_mean","MCP (TL/MWh)_sum","Dammed_Hydro_pr_sum")]
+
+
+```
+
+
+```{r}
+Q <- quantile(df_hydro$Dammed_Hydro_pr_mean, probs=c(.25, .75), na.rm = FALSE)
+Q
+```
+
+
+```{r}
+eliminated<- subset(df_hydro, df_hydro$Dammed_Hydro_pr_mean < (Q[1]) | df_hydro$Dammed_Hydro_pr_mean > (Q[2]))
+eliminated
+```
+
+```{r}
+#eliminated %>% ggplot(.,aes(x=`Dammed_Hydro_pr_mean`,y=`MCP (TL/MWh)_mean`))+
+#  geom_point()+geom_smooth(method=lm)
+```
 
 
 
+## Planned Production vs Planned Load
+
+```{r}
+
+planned_prod = fread('Final+Daily+Production+Program-01012017-29032021.csv', header=TRUE)
+planned_prod[,Date:=as.Date(Date,"%d.%m.%Y")]
+planned_prod[,c("Date","Hour",`Total (MWh)`)]
+planned_load=fread('LoadForecast-01012017-29032021.csv', header=TRUE)
+planned_load[,Date:=as.Date(Date,"%d/%m/%Y")]
+new_df_prod_load<-merge.data.frame(planned_load,planned_prod,by=c("Date","Hour"))
+new_df_prod_load<-data.table(new_df_prod_load)
+new_df_prod_load[,`Load Forecast (MWh)`:=as.numeric(gsub(",", "", `Load Forecast (MWh)`))]
+new_df_prod_load[,`Total (MWh)`:=as.numeric(gsub(",", "", `Total (MWh)`))]
+new_df_prod_load$ratio<-new_df_prod_load$`Load Forecast (MWh)`/new_df_prod_load$`Total (MWh)`
+```
+
+
+```{r}
+
+df_comb<-merge(new_df_prod_load[,c(1,2,17)],mcp_raw[,c(1:3)],by=c("Date","Hour"))
+
+df_comb %>% ggplot(.,aes(x=`MCP (TL/MWh)`,y=ratio))+
+  geom_point()
+```
+
+```{r}
+library(tidyverse)
+df_comb %>%
+  mutate(pct_change = (lead(ratio)/ratio - 1) * 100)%>% ggplot(.,aes(x=`MCP (TL/MWh)`,y=pct_change))+
+  geom_point()
+```
+
+# Wind ratio & Hydro ratio analysis
+
+```{r}
+mcp_raw<-mcp_raw[Date<="2021-03-13",]
+production<-production[Date<="2021-03-13",c("Date","Hour","Total (MWh)","Dammed Hydro","Wind")]
+merged_data<-merge(mcp_raw,production,by =c("Date","Hour"))
+merged_data<-merged_data %>%
+  mutate(pct_wind = (Wind/`Total (MWh)`) * 100, pct_dammed_hydro=(`Dammed Hydro`/`Total (MWh)`) * 100)
+```
+
+
+```{r}
+merged_data2<-merged_data[Date>="2021-02-20",]
+
+autoplot(cbind(ts(merged_data2$`MCP (TL/MWh)`),ts(merged_data2$pct_dammed_hydro)),facets=TRUE)
+```
+
+```{r}
+library(corrplot)
+
+M<-cor(merged_data[,c(3,9,12)])
+
+corrplot(M, method="number")
+```
+
+
+
+
+### Differencing
+
+```{r}
+
+merged_data<-merged_data%>%
+  mutate(diff_perc_hydro=c(NA,diff(pct_dammed_hydro)),diff_perc_wind=c(NA,diff(pct_dammed_hydro)),diff_MCP=c(NA,diff(`MCP (TL/MWh)`)))
+
+cor(merged_data$diff_MCP,merged_data$diff_perc_hydro, use="complete.obs")
+```
+
+
+```{r}
+merged_data3<-merged_data[Date>="2021-02-20",]
+
+autoplot(cbind(ts(merged_data3$diff_MCP),ts(merged_data3$diff_perc_wind),ts(merged_data3$diff_perc_hydro)),facets=TRUE)
+```
+
+## Percentage of Renewable
+
+## Granger test of causality
+ First, be sure that both are stationary. Order(lag) is important!
+ 
+```{r}
+library(lmtest)
+grangertest(merged_data$`MCP (TL/MWh)`~merged_data$pct_dammed_hydro, order=1)
+```
+
+```{r}
+#install.packages("vars")
+library(vars)
+causal_df<-cbind(merged_data$pct_dammed_hydro,merged_data$`MCP (TL/MWh)`)
+causal_car<-VAR(causal_df,type="const", lag.max=10 , ic = "AIC")
+causality(causal_car,cause="y1")$Granger
+```
+
+## Wind percentage effect
+
+```{r}
+merged_data3<-merged_data[Date>="2021-02-20",]
+
+autoplot(cbind(ts(merged_data3$`MCP (TL/MWh)`),ts(merged_data3$pct_wind)),facets=TRUE)
+```
+
+
+```{r}
+merged_data4<-merged_data[Date<="2021-01-20" & Date>="2020-01-16",]
+
+autoplot(cbind(ts(merged_data4$`MCP (TL/MWh)`),ts(merged_data4$pct_wind),ts(merged_data4$pct_dammed_hydro)),facets=TRUE)
+```
+
+```{r}
+library(vars)
+causal_df<-cbind(merged_data$pct_wind,merged_data$`MCP (TL/MWh)`)
+causal_car<-VAR(causal_df,type="const", lag.max=10 , ic = "AIC")
+causality(causal_car,cause="y2")$Granger
+```
+
+
+```{r}
+merged_all = fread('merged.csv', header=TRUE)
+merged_all[,Date:=as.Date(Date,"%d-%m-%Y")]
+```
+
+# NATURAL GAS PROPORTION
+
+```{r}
+merged_data4<-merged_all[Date<="2017-06-20" & Date>="2017-06-15",] 
+
+autoplot(cbind(ts(merged_data4$MCP..TL.MWh.),ts(merged_data4$GProportion.NatGas),ts(merged_data4$GProportion.Wind),ts(merged_data4$GProportion.DammedH),ts(merged_data4$GProportion.Lignite),ts(merged_data4$GProportion.ImportC)),facets=TRUE)
+```
+
+## Renewable proportion analysis
+
+```{r}
+merged_all<-merged_all%>%
+  mutate(pct_renewable = (GProportion.DammedH+GProportion.Biomass+GProportion.Geot+GProportion.River+GProportion.Solar))
+```
+
+
+```{r}
+merged_data4<-merged_all[Date<="2018-06-20" & Date>="2018-05-15",] 
+
+autoplot(cbind(ts(merged_data4$MCP..TL.MWh.),ts(merged_data4$pct_renewable)),facets=TRUE)
+```
+
+
+
+```{r}
+cor(merged_all$MCP..TL.MWh.,merged_all$pct_renewable,use = "pairwise.complete.obs", method = c("pearson"))
+```
+
+```{r}
+M<-cor(merged_all[,c("MCP..TL.MWh.","pct_renewable")],use ="pairwise.complete.obs",method="pearson" )
+
+corrplot(M, method="number")
+```
 
