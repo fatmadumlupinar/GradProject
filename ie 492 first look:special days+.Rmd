@@ -1,0 +1,1391 @@
+---
+title: "IE 492 MCP First Look"
+author: "Alican Yılmaz"
+date: "3/29/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+ #setwd("/Users/Alican/Documents/Github/ie492-/Datasets")
+
+```
+
+## R Markdown
+
+```{r READ, warning=FALSE, message=FALSE}
+library('ggplot2')
+library('forecast')
+library('tseries')
+library("data.table")
+library("lubridate")
+library("zoo")
+library("plotly")
+```
+
+
+```{r}
+
+mcp_raw = fread('MCP-01012017-29032021.csv', header=TRUE)
+mcp_raw[,Date:=as.Date(Date,"%d/%m/%Y")]
+```
+
+
+```{r}
+  daily_MCP=mcp_raw[,list(daily_MCP=mean(`PTF (USD/MWh)`,na.rm=T)),by=list(Date)]
+```
+
+```{r}
+plt<-ggplot(daily_MCP, aes(Date, daily_MCP)) + geom_line()  + labs(x="Date",y="PTF (USD/MWh)",title="Daily Mean MCP between 2017-2021")
+
+ggplotly(plt)
+```
+
+Variance not constant, there is trend for sure. Also, outliers exist. Transformation is necessary?
+
+Currency also has an effect maybe? (2018 Currency crisis)
+
+```{r acf/pacf}
+
+ggAcf(daily_MCP$daily_MCP, lag=48,main="Daily MCP Time Series ACF")
+
+
+```
+
+
+Seasonality at weekly level.
+
+
+
+```{r}
+# Plotting a portion of daily data
+ggplot(data = daily_MCP[1:28], aes(x = Date, y =daily_MCP )) +
+  geom_line(color = "darkred") +
+  labs(title = "Daily MCP(01.01.2017-28.01.2017) ",
+       x = "Date",
+       y= "MCP TL/(MWh)") +
+  scale_x_date(date_minor_breaks = "1 day", date_breaks = "2 days", date_labels = "%d %b") +
+  theme_minimal()
+```
+
+
+
+
+```{r}
+plt<-ggplot(data = mcp_raw[1:96], aes(x = index(mcp_raw[1:96]), y = `MCP (TL/MWh)` )) +
+  geom_line(color = "darkred") +
+  labs(title = "Hourly MCP(01.01.2017-04.01.2017) ",
+       x = "Date",
+       y= "MCP TL/(MWh)") +
+  theme_minimal()
+ggplotly(plt)
+```
+
+
+There seems to be a seasonality at hourly level.
+
+```{r ACF/PACF}
+#market_clearing_price
+ggAcf(mcp_raw$`MCP (TL/MWh)`, lag=72, main="Hourly MCP Time Series ACF")
+
+```
+
+Daily seasonality.
+
+Weekends & holidays might affect.(But weekends might be redundant if weekly seasonality is put as input.)
+Electricity Demand
+Electricity Load
+Temperature
+Available capacity
+Codes of Days
+Supply & Demand of Electricity(Only shows one hour. How to download all?)
+Weather conditions & Fuel Prices
+
+```{r Data manipulation weekend and day code is added}
+mcp_raw$day <- weekdays(as.Date(mcp_raw$Date))
+mcp_raw$IsWeekend <- mcp_raw$day %in% c("Saturday","Sunday")
+mcp_raw<-transform(mcp_raw ,IsWeekend = ifelse(mcp_raw$day %in% c("Saturday","Sunday") ,1,0 ))
+
+```
+
+
+# Web Scraping For Fuel Prices
+
+```{r Fuel Prices in Turkey}
+#install.packages("rvest")
+#install.packages("dplyr")
+library(rvest)
+library(dplyr)
+```
+
+
+```{r}
+link="https://www.tppd.com.tr/en/former-oil-prices?id=34&county=413&StartDate=01.01.2017&EndDate=29.03.2021"
+page=read_html(link)
+
+date<-page %>% html_nodes("td:nth-child(1)") %>% html_text()
+fuel_price<-as.numeric(page %>% html_nodes("td:nth-child(6)") %>% html_text())
+fuel_price_df<-data.frame(date,fuel_price,stringsAsFactors = FALSE)
+fuel_price_df$date<-as.Date(fuel_price_df$date, format =  "%d %B %Y")
+```
+
+
+Some of the days are missing. We could interpolate them
+
+```{r interpolating missing values of fuel prices}
+
+ApproxFun <- approxfun(x = fuel_price_df$date, y = fuel_price_df$fuel_price)
+Dates<-seq.Date(ymd("2017-01-01"),ymd("2021-04-09"),by=1)
+LinearFit <- ApproxFun(Dates)
+
+
+full_fuel_price_df<-data.frame(Date = Dates, fUEL_pRICE = LinearFit)
+
+full_fuel_price_df<-full_fuel_price_df[full_fuel_price_df$Date<"2021-03-30",]
+
+```
+
+
+
+
+## ARIMA: Benchmark Purposes
+
+Box-Jenkins Methodology will be used:
+
+```{r}
+adf.test(mcp_raw$`MCP (TL/MWh)`)
+```
+
+Data is stationary at 0.01 significance level.
+
+```{r}
+ggAcf(mcp_raw$`MCP (TL/MWh)`,lag.max = 168)
+```
+
+```{r}
+ggPacf(mcp_raw$`MCP (TL/MWh)`,lag.max = 168)
+
+```
+
+
+
+```{r}
+BoxCox.lambda(daily_MCP$`MCP (TL/MWh)`)
+```
+
+Lambda is close to 1, so no need transformation.
+
+
+
+
+
+
+We know that there is weekly seasonality from the daily plot.
+
+```{r}
+daily_mcp_ts<-ts(daily_MCP$daily_MCP,frequency = 7)
+fitted<-auto.arima(daily_mcp_ts,seasonal=TRUE,trace = TRUE)
+checkresiduals(fitted)
+```
+
+
+```{r}
+daily_mcp_ts<-ts(daily_MCP$daily_MCP,frequency = 7)
+fitted<-arima(daily_mcp_ts,order=c(1,1,1),seasonal=c(2,0,0))
+ggtsdisplay(fitted$residuals)
+checkresiduals(fitted)
+library(lmtest)
+coeftest(fitted)
+```
+
+Model each hour separately for benchmark purpose.
+
+
+
+## MAPE 
+
+For one week:
+
+Train: 2017-2020
+Test: 3 Week
+
+```{r}
+# Error test
+```
+
+## DATA COLLECTING & RELATIONSHIP TESTING
+
+HYPOTHESIS: ELECTRICITY DEMAND SIGNIFICANTLY AFFECTS MCP
+
+### Getting Electricity Demand Data
+
+```{r}
+
+electricity_demand_df<-fread('RealTimeConsumption-01012017-12042021.csv', header=TRUE)
+electricity_demand_df[,Date:=as.Date(Date,"%d.%m.%Y")]
+electricity_demand_df[,`Consumption (MWh)`:=as.numeric(gsub(",", "", `Consumption (MWh)`))]
+electricity_demand_df<-electricity_demand_df[Date<="2021-03-29",]
+
+```
+
+
+
+```{r creating data_frame includes all variables}
+whole_Data<-mcp_raw
+whole_Data$electricity_consumption<-electricity_demand_df$`Consumption (MWh)`
+```
+
+### Plotting Demand vs Price Relationship
+
+```{r}
+ggplot(whole_Data[Date<="2017-06-01",],aes(x=electricity_consumption, y =`MCP (TL/MWh)`))+
+geom_point()+geom_smooth(method=lm)
+```
+
+
+
+Plotting at daily level, for each hour separately:
+
+```{r}
+ggplot(whole_Data,aes(x=electricity_consumption, y =`MCP (TL/MWh)`))+
+geom_point()+geom_smooth(method=lm)+
+  facet_wrap(vars(Hour))
+```
+
+### Regression Model for Electricity Demand
+
+
+
+```{r}
+lmMCP = lm(`MCP (TL/MWh)`~electricity_consumption, data = whole_Data) #Create the linear regression
+summary(lmMCP) #Review the results
+```
+
+we can say that electricity consumption is statistically significant.However, R-square is quite low, meaning that variance can not be explained simply by consumption.
+
+```{r}
+ggtsdisplay(lmMCP$residuals)
+```
+
+
+This allows you to polynomial regression model of degree 3 of x
+
+
+```{r}
+#model <- lm(y ~ poly(x,3))
+```
+
+
+### Fuel_Prices vs MCP
+
+
+```{r}
+whole_Data_daily<-whole_Data %>%
+  group_by(Date)
+whole_Data_daily<-whole_Data_daily%>% summarise(
+  mcp=mean(`MCP (TL/MWh)`))
+whole_Data_daily$fuelprice<-full_fuel_price_df$fUEL_pRICE  
+
+```
+
+
+
+```{r}
+whole_Data_daily%>%
+  ggplot(.,aes(x=fuelprice,y=mcp))+
+  geom_point()+geom_smooth(method=lm)
+```
+
+### Regression Model for Electricity Demand
+
+
+
+```{r}
+lmMCP = lm(mcp~fuelprice, data = whole_Data_daily) #Create the linear regression
+summary(lmMCP) #Review the results
+```
+
+Statistically significant. But R^2 could be improved still.
+
+## Hydro Production Analysis
+
+Hypothesis: Real Time Hydro Production has an effect on MCP
+
+### Getting Data
+
+
+```{r}
+production = fread('RealTimeGeneration-01012017-14032021.csv', header=TRUE)
+production[,Date:=as.Date(Date,"%d.%m.%Y")]
+production[,3:18] <- lapply(production[,3:18], function(x) as.numeric(gsub(",", "", x)))
+
+```
+
+
+```{r}
+df<-whole_Data[Date<="2021-03-13",]
+df$Dammed_Hydro_pr<-production[Date<="2021-03-13",`Dammed Hydro`]
+```
+
+
+
+```{r}
+df%>%
+  ggplot(.,aes(x=Dammed_Hydro_pr,y=`MCP (TL/MWh)`))+
+  geom_point()+geom_smooth(method=lm)
+```
+
+
+```{r}
+df%>%
+  ggplot(.,aes(x=Dammed_Hydro_pr,y=`MCP (TL/MWh)`))+
+  geom_point()+geom_smooth(method=lm) +facet_wrap(vars(Hour))
+```
+
+
+It is hard to tell the effect of dammed hydro production on MCP as it is hour dependent.
+
+```{r}
+lmMCP = lm(`MCP (TL/MWh)`~Dammed_Hydro_pr, data = df) #Create the linear regression
+summary(lmMCP) #Review the results
+```
+
+R^2 is almost zero. 
+
+
+
+## Bilateral Contracts
+
+Hypothesis: Bilateral Contracts Total Bid Quantity has an effect on price.
+
+```{r}
+Bilateral_df = fread('BilateralContractsBid-01012017-29032021.csv', header=TRUE)
+Bilateral_df[,Date:=as.Date(Date,"%d/%m/%Y")]
+Bilateral_df[,3] <- lapply(Bilateral_df[,3], function(x) as.numeric(gsub(",", "", x)))
+```
+
+```{r}
+whole_Data$'bilateral(MWh)'<-Bilateral_df[,3]
+
+
+whole_Data[Date>="2020-01-01",]%>%
+  ggplot(.,aes(x=`bilateral(MWh)`,y=`MCP (TL/MWh)`))+
+  geom_point()+geom_smooth(method=lm)
+
+
+```
+
+
+
+
+```{r}
+lmMCP = lm(`MCP (TL/MWh)`~`bilateral(MWh)`, data = whole_Data[Date>="2020-01-01",]) #Create the linear regression
+summary(lmMCP) #Review the results
+```
+
+# Corrplot
+
+```{r}
+library(corrplot)
+
+M<-cor(whole_Data[,c(3,8)])
+
+corrplot(M, method="number")
+```
+
+## Installed Capacity vs MCP
+
+```{r}
+capacity=fread("EAK-01012017-29032021.csv",header=TRUE)
+capacity[,Date:=as.Date(Date,"%d.%m.%Y")]
+
+capacity[,`Total (MWh)`:=as.numeric(gsub(",", "",`Total (MWh)`))]
+head(capacity)
+  
+```
+
+
+```{r}
+whole_Data$InstalledCapacity<-capacity$`Total (MWh)`
+head(whole_Data)
+```
+
+```{r}
+whole_Data%>%
+  ggplot(.,aes(x=InstalledCapacity,y=`MCP (TL/MWh)`))+
+  geom_point()+geom_smooth(method=lm) #+facet_wrap(vars(Hour))
+```
+
+
+```{r}
+whole_Data %>%
+  group_by(Date)%>%
+  summarise(
+    daily_MCP = sum(`MCP (TL/MWh)`),
+  daily_capacity = sum(InstalledCapacity))%>%
+  ggplot(.,aes(x=daily_capacity,y=daily_MCP))+
+  geom_point()+geom_smooth(method=lm)
+```
+
+
+
+
+
+
+## Agraggate Daily Data
+
+
+
+
+
+## Daily Mean Electricity Consumption Data
+
+
+```{r}
+daily_whole_data<-whole_Data %>% 
+  group_by(Date) %>% 
+  summarise(across(where(is.numeric), list(mean = mean, sum = sum)))
+```
+
+```{r}
+model <- lm(`MCP (TL/MWh)_sum` ~ poly(InstalledCapacity_sum,3),data=daily_whole_data)
+summary(model)
+plot(fitted(model),residuals(model))
+```
+## Outlier Analysis
+
+
+
+```{r}
+daily_whole_data%>%
+  ggplot(.,aes(x=Date,y=`MCP (TL/MWh)_mean`))+
+  geom_line(color = "darkred") +
+  labs(title = "Daily MCP",
+       x = "Date",
+       y= "MCP TL/(MWh)") +
+  theme_minimal()
+```
+
+## Daily Hydro Production
+
+```{r}
+df_aggregated<-df%>% 
+  group_by(Date) %>% 
+  summarise(across(where(is.numeric), list(mean = mean, sum = sum)))
+df_aggregated
+```
+
+```{r}
+df_aggregated%>%ggplot(.,aes(x=`Dammed_Hydro_pr_sum`,y=`MCP (TL/MWh)_sum`))+
+  geom_point()+geom_smooth(method=lm)
+```
+
+
+
+```{r}
+`MCP (USD/MWh)`<-ts(df_aggregated$`PTF (USD/MWh)_mean`,start=c(2017,1), frequency=365)
+`Dammed_Hydro_Pr(Mwh)`<-ts(ts(df_aggregated$Dammed_Hydro_pr_mean),start=c(2017,1), frequency=365)
+
+autoplot(cbind(`MCP (USD/MWh)`,`Dammed_Hydro_Pr(Mwh)`),facets=TRUE)+
+  labs(x = "Date", y ="",title = "Market Clearing Price vs Dammed Hydro Production Level 2017-2021")+
+  scale_x_yearmon(n=5)
+
+```
+
+
+```{r}
+library(corrplot)
+
+M<-cor(df_aggregated[,c(2,10)])
+
+corrplot(M, method="number")
+```
+
+
+
+```{r}
+df_hydro<-df_aggregated[,c("MCP (TL/MWh)_mean","Dammed_Hydro_pr_mean","MCP (TL/MWh)_sum","Dammed_Hydro_pr_sum")]
+
+
+```
+
+
+```{r}
+Q <- quantile(df_hydro$Dammed_Hydro_pr_mean, probs=c(.25, .75), na.rm = FALSE)
+Q
+```
+
+
+```{r}
+eliminated<- subset(df_hydro, df_hydro$Dammed_Hydro_pr_mean < (Q[1]) | df_hydro$Dammed_Hydro_pr_mean > (Q[2]))
+eliminated
+```
+
+```{r}
+#eliminated %>% ggplot(.,aes(x=`Dammed_Hydro_pr_mean`,y=`MCP (TL/MWh)_mean`))+
+#  geom_point()+geom_smooth(method=lm)
+```
+
+
+
+## Planned Production vs Planned Load
+
+```{r}
+
+planned_prod = fread('Final+Daily+Production+Program-01012017-29032021.csv', header=TRUE)
+planned_prod[,Date:=as.Date(Date,"%d.%m.%Y")]
+planned_prod[,c("Date","Hour",`Total (MWh)`)]
+planned_load=fread('LoadForecast-01012017-29032021.csv', header=TRUE)
+planned_load[,Date:=as.Date(Date,"%d/%m/%Y")]
+new_df_prod_load<-merge.data.frame(planned_load,planned_prod,by=c("Date","Hour"))
+new_df_prod_load<-data.table(new_df_prod_load)
+new_df_prod_load[,`Load Forecast (MWh)`:=as.numeric(gsub(",", "", `Load Forecast (MWh)`))]
+new_df_prod_load[,`Total (MWh)`:=as.numeric(gsub(",", "", `Total (MWh)`))]
+new_df_prod_load$ratio<-new_df_prod_load$`Load Forecast (MWh)`/new_df_prod_load$`Total (MWh)`
+```
+
+
+```{r}
+
+df_comb<-merge(new_df_prod_load[,c(1,2,17)],mcp_raw[,c(1:3)],by=c("Date","Hour"))
+
+df_comb %>% ggplot(.,aes(x=`MCP (TL/MWh)`,y=ratio))+
+  geom_point()
+```
+
+```{r}
+library(tidyverse)
+df_comb %>%
+  mutate(pct_change = (lead(ratio)/ratio - 1) * 100)%>% ggplot(.,aes(x=`MCP (TL/MWh)`,y=pct_change))+
+  geom_point()
+```
+
+# Wind ratio & Hydro ratio analysis
+
+```{r}
+mcp_raw<-mcp_raw[Date<="2021-03-13",]
+production<-production[Date<="2021-03-13",c("Date","Hour","Total (MWh)","Dammed Hydro","Wind")]
+merged_data<-merge(mcp_raw,production,by =c("Date","Hour"))
+merged_data<-merged_data %>%
+  mutate(pct_wind = (Wind/`Total (MWh)`) * 100, pct_dammed_hydro=(`Dammed Hydro`/`Total (MWh)`) * 100)
+```
+
+
+```{r}
+merged_data2<-merged_data[Date>="2021-02-20",]
+
+autoplot(cbind(ts(merged_data2$`MCP (TL/MWh)`),ts(merged_data2$pct_dammed_hydro)),facets=TRUE)
+```
+
+```{r}
+library(corrplot)
+
+M<-cor(merged_data[,c(3,9,12)])
+
+corrplot(M, method="number")
+```
+
+
+
+
+### Differencing
+
+```{r}
+
+merged_data<-merged_data%>%
+  mutate(diff_perc_hydro=c(NA,diff(pct_dammed_hydro)),diff_perc_wind=c(NA,diff(pct_dammed_hydro)),diff_MCP=c(NA,diff(`MCP (TL/MWh)`)))
+
+cor(merged_data$diff_MCP,merged_data$diff_perc_hydro, use="complete.obs")
+```
+
+
+```{r}
+merged_data3<-merged_data[Date>="2021-02-20",]
+
+autoplot(cbind(ts(merged_data3$diff_MCP),ts(merged_data3$diff_perc_wind),ts(merged_data3$diff_perc_hydro)),facets=TRUE)
+```
+
+## Percentage of Renewable
+
+## Granger test of causality
+ First, be sure that both are stationary. Order(lag) is important!
+ 
+```{r}
+library(lmtest)
+grangertest(merged_data$`MCP (TL/MWh)`~merged_data$pct_dammed_hydro, order=1)
+```
+
+```{r}
+#install.packages("vars")
+library(vars)
+causal_df<-cbind(merged_data$pct_dammed_hydro,merged_data$`MCP (TL/MWh)`)
+causal_car<-VAR(causal_df,type="const", lag.max=10 , ic = "AIC")
+causality(causal_car,cause="y1")$Granger
+```
+
+## Wind percentage effect
+
+```{r}
+merged_data3<-merged_data[Date>="2021-02-20",]
+
+autoplot(cbind(ts(merged_data3$`MCP (TL/MWh)`),ts(merged_data3$pct_wind)),facets=TRUE)
+```
+
+
+```{r}
+merged_data4<-merged_data[Date<="2021-01-20" & Date>="2020-01-16",]
+
+autoplot(cbind(ts(merged_data4$`MCP (TL/MWh)`),ts(merged_data4$pct_wind),ts(merged_data4$pct_dammed_hydro)),facets=TRUE)
+```
+
+```{r}
+library(vars)
+causal_df<-cbind(merged_data$pct_wind,merged_data$`MCP (TL/MWh)`)
+causal_car<-VAR(causal_df,type="const", lag.max=10 , ic = "AIC")
+causality(causal_car,cause="y2")$Granger
+```
+
+
+```{r}
+merged_all = fread('merged.csv', header=TRUE)
+merged_all[,Date:=as.Date(Date,"%d-%m-%Y")]
+```
+
+# NATURAL GAS PROPORTION
+
+```{r}
+merged_data4<-merged_all[Date<="2017-06-20" & Date>="2017-06-15",] 
+
+autoplot(cbind(ts(merged_data4$MCP..TL.MWh.),ts(merged_data4$GProportion.NatGas),ts(merged_data4$GProportion.Wind),ts(merged_data4$GProportion.DammedH),ts(merged_data4$GProportion.Lignite),ts(merged_data4$GProportion.ImportC)),facets=TRUE)
+```
+
+## Renewable proportion analysis
+
+```{r}
+merged_all<-merged_all%>%
+  mutate(pct_renewable = (GProportion.DammedH+GProportion.Biomass+GProportion.Geot+GProportion.River+GProportion.Solar))
+```
+
+
+```{r}
+merged_data4<-merged_all[Date<="2018-10-20" & Date>="2018-05-15",] 
+merged_data4<-merged_data4[Hour==12]
+`MCP (USD/MWh)`<-ts(merged_data4$PTF..USD.MWh.,start=c(2018,5), frequency=365)
+Pct_Renewable<-ts(merged_data4$pct_renewable,start=c(2018,5),frequency = 365)
+autoplot(cbind(`MCP (USD/MWh)`,pct_renewable),facets=TRUE)+
+   labs(x = "Date", y ="",title = "Market Clearing Price vs Renewable to Production Ratio in 2018")+
+  scale_x_yearmon(n=12)
+
+
+#renewable ratio outlier
+merged_data4<-merged_all
+merged_data4<-merged_data4[Hour==12]
+
+
+Q <- quantile(merged_data4$pct_renewable, probs=c(.05, .95), na.rm = TRUE)
+Q
+
+merged_data4[,pct_renewable_small:= as.numeric(merged_data4$pct_renewable < (Q[1]))]
+merged_data4[,pct_renewable_great:= as.numeric(merged_data4$pct_renewable > (Q[2]))]
+
+plt<-ggplot(merged_data4,aes(x=as.factor(pct_renewable_small),y=PTF..USD.MWh.)) + geom_boxplot(length= 0.5) 
+ggplotly(plt)
+
+plt<-ggplot(merged_data4,aes(x=as.factor(pct_renewable_great),y=PTF..USD.MWh.)) + geom_boxplot(length= 0.5) 
+ggplotly(plt)
+
+```
+
+
+
+```{r}
+cor(merged_all$MCP..TL.MWh.,merged_all$pct_renewable,use = "pairwise.complete.obs", method = c("pearson"))
+```
+
+```{r}
+M<-cor(merged_all[,c("MCP..TL.MWh.","pct_renewable")],use ="pairwise.complete.obs",method="pearson" )
+
+corrplot(M, method="number")
+```
+
+
+## Special Days
+
+Weekend,day codes, special days.
+
+```{r}
+mcp_raw
+```
+
+```{r}
+model<-lm(formula = `PTF (USD/MWh)`~ -1 + as.factor(day), 
+data = mcp_raw)
+summary(model)
+checkresiduals(model)
+```
+
+```{r}
+mcp_raw[, lag_24:= shift(`PTF (USD/MWh)`,24)]
+mcp_raw[, trend:= seq(1:nrow(mcp_raw))]
+model<-lm(formula = `PTF (USD/MWh)`~ -1 + as.factor(day)+lag_24+trend, 
+data = mcp_raw)
+summary(model)
+checkresiduals(model)
+```
+## outliers
+
+```{r}
+length(model$residuals)
+
+```
+
+
+
+
+
+```{r}
+mcp_raw[,residuals := NA]
+mcp_raw$residuals[25:nrow(mcp_raw)]<-model$residuals
+Q <- quantile(mcp_raw$residuals, probs=c(.05, .95), na.rm = TRUE)
+Q
+
+outliers<- subset(mcp_raw, mcp_raw$residuals < (Q[1]) | mcp_raw$residuals > (Q[2]))
+outliers
+mcp_raw[,outlier_small:= as.numeric(mcp_raw$residuals < (Q[1]))]
+mcp_raw[,outlier_great:= as.numeric(mcp_raw$residuals > (Q[2]))]
+```
+
+```{r}
+outliers<- subset(model$residuals, model$residuals < (Q[1]) | model$residuals > (Q[2]))
+#outliers
+```
+
+```{r}
+model<-lm(formula = `PTF (USD/MWh)`~ -1 + as.factor(day)+lag_24+trend+outlier_small+outlier_great, 
+data = mcp_raw)
+summary(model)
+checkresiduals(model)
+```
+
+## add special days to the dataset as dummy 
+
+```{r}
+mcp_raw[,is_yilbasi := 0]
+mcp_raw[mcp_raw$Date %in% yilbasi,is_yilbasi:=1]
+
+mcp_raw[,is_sevgililergunu := 0]
+mcp_raw[mcp_raw$Date %in% sevgililergunu,is_sevgililergunu:=1]
+
+
+
+mcp_raw[,is_cocukbayrami := 0]
+mcp_raw[mcp_raw$Date %in% cocukbayrami,is_cocukbayrami:=1]
+
+mcp_raw[,is_iscibayrami := 0]
+mcp_raw[mcp_raw$Date %in% iscibayrami,is_iscibayrami:=1]
+
+mcp_raw[,is_annelergunu := 0]
+mcp_raw[mcp_raw$Date %in% annelergunu,is_annelergunu:=1]
+
+mcp_raw[,is_genclikbayrami := 0]
+mcp_raw[mcp_raw$Date %in% genclikbayrami,is_genclikbayrami:=1]
+
+mcp_raw[,is_babalargunu := 0]
+mcp_raw[mcp_raw$Date %in% babalargunu,is_babalargunu:=1]
+
+mcp_raw[,is_zaferbayrami := 0]
+mcp_raw[mcp_raw$Date %in% zaferbayrami,is_zaferbayrami:=1]
+
+mcp_raw[,is_cumhuriyet := 0]
+mcp_raw[mcp_raw$Date %in% cumhuriyet,is_cumhuriyet:=1]
+
+mcp_raw[,is_kadinlargunu := 0]
+mcp_raw[mcp_raw$Date %in% kadinlargunu,is_kadinlargunu:=1]
+
+
+mcp_raw[,is_ramazanbayrami := 0]
+mcp_raw[mcp_raw$Date %in% ramazanbayrami,is_ramazanbayrami:=1]
+
+mcp_raw[,is_kurbanbayrami := 0]
+mcp_raw[mcp_raw$Date %in% kurbanbayrami,is_kurbanbayrami:=1]
+
+mcp_raw[,is_uzunbayram := 0]
+mcp_raw[mcp_raw$Date %in% uzunbayram,is_kurbanbayrami:=1]
+
+mcp_raw[,is_uzunbayram := 0]
+mcp_raw[mcp_raw$Date %in% uzunbayram,is_kurbanbayrami:=1]
+
+mcp_raw[,is_uzunbayram := 0]
+mcp_raw[mcp_raw$Date %in% uzunbayram,is_kurbanbayrami:=1]
+
+mcp_raw[,is_okulacilisi := 0]
+mcp_raw[mcp_raw$Date %in% okulacilisi,is_okulacilisi:=1]
+okulkapanisi
+mcp_raw[,is_okulkapanisi := 0]
+mcp_raw[mcp_raw$Date %in% okulkapanisi,is_okulkapanisi:=1]
+
+mcp_raw[,is_semester := 0]
+mcp_raw[mcp_raw$Date %in% semester,is_semester:=1]
+
+mcp_raw[,is_kandil := 0]
+mcp_raw[mcp_raw$Date %in% kandil,is_kandil:=1]
+
+ramazanbayramilkgun
+mcp_raw[,is_ramazanbayramilkgun := 0]
+mcp_raw[mcp_raw$Date %in% ramazanbayramilkgun,is_ramazanbayramilkgun:=1]
+ramazanbayramisonrasi
+mcp_raw[,is_ramazanbayramisonrasi := 0]
+mcp_raw[mcp_raw$Date %in% ramazanbayramisonrasi,is_ramazanbayramisonrasi:=1]
+
+mcp_raw[,is_kurbanbayramilkgun := 0]
+mcp_raw[mcp_raw$Date %in% kurbanbayramilkgun,is_kurbanbayramilkgun:=1]
+
+mcp_raw[,is_ramazangunler := 0]
+mcp_raw[mcp_raw$Date %in% ramazangunler,is_ramazangunler:=1]
+
+mcp_raw[,is_yilbasioncesi := 0]
+mcp_raw[mcp_raw$Date %in% yilbasioncesi,is_yilbasioncesi:=1]
+
+mcp_raw[,is_kurbanoncesigunler := 0]
+mcp_raw[mcp_raw$Date %in% kurbanoncesigunler,is_kurbanoncesigunler:=1]
+
+mcp_raw[,is_ramazanilkgun := 0]
+mcp_raw[mcp_raw$Date %in% ramazanilkgun,is_ramazanilkgun:=1]
+
+mcp_raw[,is_ramazanoncesigunler := 0]
+mcp_raw[mcp_raw$Date %in% ramazanoncesigunler,is_ramazanoncesigunler:=1]
+
+mcp_raw[,is_arife := 0]
+mcp_raw[mcp_raw$Date %in% arife,is_arife:=1]
+
+mcp_raw[,is_onbestemmuz := 0]
+mcp_raw[mcp_raw$Date %in% onbestemmuz,is_onbestemmuz:=1]
+
+mcp_raw[,is_holiday := 0]
+mcp_raw[mcp_raw$Date %in% holiday,is_holiday:=1]
+
+mcp_raw[,is_outlierdays := 0]
+mcp_raw[mcp_raw$Date %in% outlierdays,is_outlierdays:=1]
+
+mcp_raw[,is_elections:= 0]
+mcp_raw[mcp_raw$Date %in% elections,is_elections:=1]
+
+mcp_raw[,is_examination:= 0]
+mcp_raw[mcp_raw$Date %in% examination,is_examination:=1]
+
+mcp_raw[,is_curfew:= 0]
+mcp_raw[mcp_raw$Date %in% curfew,is_curfew:=1]
+
+mcp_raw[,is_single_day_holidays:= 0]
+mcp_raw[mcp_raw$Date %in% single_day_holidays,is_single_day_holidays:=1]
+
+mcp_raw[,is_school_start:= 0]
+mcp_raw[mcp_raw$Date %in% school_start,is_school_start:=1]
+
+mcp_raw[,is_school_end:= 0]
+mcp_raw[mcp_raw$Date %in% school_end,is_school_end:=1]
+
+mcp_raw[,is_school_period:= 0]
+mcp_raw[mcp_raw$Date %in% school_period,is_school_period:=1]
+
+mcp_raw[,is_school_days:= 0]
+mcp_raw[mcp_raw$Date %in% school_days,is_school_days:=1]
+
+mcp_raw[,is_semester_days:= 0]
+mcp_raw[mcp_raw$Date %in% semester_days,is_semester_days:=1]
+
+mcp_raw[,is_winter_break:= 0]
+mcp_raw[mcp_raw$Date %in% winter_break,is_winter_break:=1]
+
+mcp_raw[,is_summer_break:= 0]
+mcp_raw[mcp_raw$Date %in% summer_break,is_summer_break:=1]
+
+install.packages("writexl")
+
+library("writexl")
+write_xlsx(mcp_raw,"/Users/alicanyilmaz/Desktop///mcp_special_days.xlsx")
+
+```
+
+
+```{r}
+# +outlier_small+outlier_great is deleted
+model<-lm(formula = `PTF (USD/MWh)`~ ., 
+data = mcp_raw[,-c("Date","Hour","MCP (TL/MWh)","PTF (EUR/MWh)","residuals","outlier_small"            ,"outlier_great","is_holiday","is_single_day_holidays","generation/consumption","outlier_ratio_small","outlier_ratio_great")])
+summary(model)
+checkresiduals(model)
+```
+
+# Special Days Price Spike Relation
+
+
+```{r}
+
+nrow(mcp_raw[is_ramazanbayrami==1])
+nrow(mcp_raw[is_ramazanbayrami==1 & outlier_small==1])
+
+```
+
+
+
+
+
+
+
+
+## h0= production/consumption has an effect on mcp
+
+
+```{r}
+merged = fread('merged.csv', header=TRUE)
+merged2<-merged[,c("Date","Hour","PTF..USD.MWh.","Generation/Consumption")]
+# bi makalede oran belli bi değerdeyse (0.9 Civarı) iyi falan yazıyordu. Hangisiydi hatırlayamadım.Şimdilik bunu gözardı edelim.
+
+
+
+corrplot(cor(merged2[,c("PTF..USD.MWh.","Generation/Consumption")],use = "pairwise.complete.obs"), method="number")
+
+
+```
+
+
+```{r}
+merged2<-merged2[complete.cases(merged2),]
+Q <- quantile(merged2$PTF..USD.MWh., probs=c(.05, .95), na.rm = TRUE)
+Q
+
+merged2[,outlier_ptf_small:= as.numeric(merged2$PTF..USD.MWh. < (Q[1]))]
+merged2[,outlier_ptf_great:= as.numeric(merged2$PTF..USD.MWh. > (Q[2]))]
+
+Q <- quantile(merged2$`Generation/Consumption`, probs=c(.05, .95), na.rm = TRUE)
+Q
+
+merged2[,outlier_ratio_small:= as.numeric(merged2$`Generation/Consumption` < (Q[1]))]
+merged2[,outlier_ratio_great:= as.numeric(merged2$`Generation/Consumption` > (Q[2]))]
+
+corrplot(cor(merged2[,c("outlier_ptf_small","outlier_ptf_great","outlier_ratio_small","outlier_ratio_great")],use = "pairwise.complete.obs"), method="number")
+
+
+res.aov2 <- aov( PTF..USD.MWh.~ outlier_ratio_small +outlier_ratio_great, data = merged2)
+summary(res.aov2)
+
+```
+
+
+```{r}
+plt<-ggplot(merged2[Hour==21],aes(x=as.factor(outlier_ratio_small),y=PTF..USD.MWh.)) + geom_boxplot(length= 0.5) 
+ggplotly(plt)
+```
+
+```{r}
+plt<-ggplot(merged2[Hour==16],aes(x=as.factor(outlier_ratio_great),y=PTF..USD.MWh.)) + geom_boxplot(length= 0.5) 
+ggplotly(plt)
+```
+
+#Residuallar üzerinden gitmek daha mantıklı olabilir. Çünkü ratio büyük de olsa sabah saatlerinde ptf küçük olacak.Ya da saat saat bak
+```{r}
+library(dplyr)
+merged2<-merged2[1:36792,]
+mcp_raw$'generation/consumption'<-merged2$`Generation/Consumption`
+mcp_raw$outlier_ratio_small<-merged2$outlier_ratio_small
+mcp_raw$outlier_ratio_great<-merged2$outlier_ratio_great
+
+plt<-ggplot(mcp_raw[],aes(x=as.factor(outlier_ratio_small),y=residuals)) + geom_boxplot(length= 0.5) 
+ggplotly(plt)
+```
+
+## Installed capacity/planned laod
+
+```{r}
+
+#new_df<-join(merged[Date<="2021-03-13",c("Date","Hour","PTF..USD.MWh.","EAK.Total (MWh)")],mcp_raw,by=c("Date","Hour"))
+```
+
+
+## planned load/planned consumption ratio 
+
+```{r}
+
+new_df_prod_load<-new_df_prod_load[Date<="2021-03-13",]
+mcp_raw$load_consumption_ratio<-new_df_prod_load$ratio
+
+mcp_raw[,is_l_c_ratio_big := 0]
+mcp_raw[load_consumption_ratio>=1,is_l_c_ratio_big:=1.1]
+
+plt<-ggplot(mcp_raw[Hour=="12:00"],aes(x=as.factor(is_l_c_ratio_big),y=`PTF (USD/MWh)`)) + geom_boxplot(length= 0.5) 
+ggplotly(plt)
+
+
+```
+
+
+
+
+
+#ARIMA BENCHMARK ANALYSIS
+
+
+```{r}
+mcp_raw = fread('MCP-01012017-29032021.csv', header=TRUE)
+mcp_raw[,Date:=as.Date(Date,"%d/%m/%Y")]
+```
+
+```{r}
+mcp_raw_train<-mcp_raw[Date<"2019-01-01"]
+mcp_raw_test<-mcp_raw[Date>="2019-01-01" & Date<="2020-01-01"]
+mcp_raw_hourly<-mcp_raw_train[Hour=="12:00"] #choose an hour to be fitted
+mcp_raw_ts<-ts(mcp_raw_hourly$`PTF (USD/MWh)`,frequency = 7)
+fitted<-auto.arima(mcp_raw_ts,seasonal=TRUE,trace = TRUE)
+checkresiduals(fitted)
+```
+```{r}
+
+fitted<-arima(mcp_raw_ts,order=c(1,1,1),seasonal=c(2,0,0))
+ggtsdisplay(fitted$residuals)
+checkresiduals(fitted)
+library(lmtest)
+coeftest(fitted)
+```
+
+```{r}
+y<-mcp_raw_test[Hour=="12:00"]$`PTF (USD/MWh)`
+
+refit<-Arima(y,model=fitted)
+ACC<-accuracy(refit)
+
+
+```
+
+```{r}
+print(ACC[,"RMSE"])
+print(ACC[,"MAE"])
+```
+
+
+
+
+
+
+
+
+
+
+
+### ARIMA ANALYSIS
+
+```{r}
+
+mcp_raw = fread('MCP-01012017-29032021.csv', header=TRUE)
+mcp_raw[,Date:=as.Date(Date,"%d/%m/%Y")]
+mcp_raw_test<-mcp_raw[Date>="2019-01-01" & Date<="2020-01-01"]
+```
+
+# define the function which predicts on a monthly basis
+```{r}
+fitted
+```
+
+```{r}
+arima_monthly_slide <- function(s_Hour) {
+  #january  
+  mcp_raw_train<-mcp_raw[Date<"2019-01-01"]
+  
+  mcp_raw_hourly<-mcp_raw_train[Hour==s_Hour] #choose an hour to be fitted
+  mcp_raw_ts<-ts(mcp_raw_hourly$`PTF (USD/MWh)`,frequency = 7)
+  
+  fitted<-auto.arima(mcp_raw_ts,seasonal=TRUE,trace = FALSE)
+  fitted
+  mcp_raw_test_<-mcp_raw_test[Hour==s_Hour & Date <"2019-02-01"] # 1 month data to be predicted
+  mcp_raw_ts<-ts(mcp_raw_test_$`PTF (USD/MWh)`,frequency = 7)
+  refit<- Arima(mcp_raw_ts, model=fitted)
+  
+  
+  
+}
+mcp_raw_test<-mcp_raw_test[Date<"2020-01-01"]
+
+mcp_raw_test<-arima_monthly_slide("00:00")
+mcp_raw_test<-arima_monthly_slide("01:00")
+mcp_raw_test<-arima_monthly_slide("02:00")
+mcp_raw_test<-arima_monthly_slide("03:00")
+mcp_raw_test<-arima_monthly_slide("04:00")
+mcp_raw_test<-arima_monthly_slide("05:00")
+mcp_raw_test<-arima_monthly_slide("06:00")
+mcp_raw_test<-arima_monthly_slide("07:00")
+mcp_raw_test<-arima_monthly_slide("08:00")
+mcp_raw_test<-arima_monthly_slide("09:00")
+mcp_raw_test<-arima_monthly_slide("10:00")
+mcp_raw_test<-arima_monthly_slide("11:00")
+mcp_raw_test<-arima_monthly_slide("12:00")
+mcp_raw_test<-arima_monthly_slide("13:00")
+mcp_raw_test<-arima_monthly_slide("14:00")
+mcp_raw_test<-arima_monthly_slide("15:00")
+mcp_raw_test<-arima_monthly_slide("16:00")
+mcp_raw_test<-arima_monthly_slide("17:00")
+mcp_raw_test<-arima_monthly_slide("18:00")
+mcp_raw_test<-arima_monthly_slide("19:00")
+mcp_raw_test<-arima_monthly_slide("20:00")
+mcp_raw_test<-arima_monthly_slide("21:00")
+mcp_raw_test<-arima_monthly_slide("22:00")
+mcp_raw_test<-arima_monthly_slide("23:00")
+
+```
+
+# accuracy test 
+
+```{r}
+error_test <- function(actual, forecasted){
+  n=length(actual)
+  error = actual-forecasted
+  mean=mean(actual)
+  sd=sd(actual)
+  bias = sum(error)/sum(actual)
+  mape = sum(abs(error/actual))/n
+  mad = sum(abs(error))#mae
+  wmape = mad/mean
+  rmse= sqrt(sum(error^2)/n) #buna g?re yap?caz
+  mae=sum(abs(error))/n #
+  MPE = sum(error/actual)/n
+  df = data.frame(n,mean,sd,bias,mape,mad,wmape,rmse,mae,MPE)
+  return(df)
+}
+```
+
+## Data visualization 
+
+### Hourly Analysis
+
+```{r}
+tail(mcp_raw_test)
+```
+ts to numeric conversion
+
+```{r}
+mcp_raw_test$predicted<-as.numeric(mcp_raw_test$predicted)
+str(mcp_raw_test)
+```
+
+#hourly analysis
+
+```{r}
+mae_vec<-c(1:24)
+rmse_vec<-c(1:24)
+i=1
+Hour_list<-c("00:00","01:00","02:00","03:00","04:00","05:00","06:00","07:00","08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00","17:00","18:00","19:00","20:00","21:00","22:00","23:00")
+for (k in Hour_list){
+  acc_data<-mcp_raw_test[Hour==k]
+  x<-error_test(acc_data$`PTF (USD/MWh)`,acc_data$predicted)
+  mae_vec[i]<-x$mae
+  rmse_vec[i]<-x$rmse
+
+  i=i+1
+}
+```
+
+
+```{r}
+mae_vec
+rmse_vec
+```
+
+
+
+
+
+
+
+
+```{r}
+wmape_vec<-c(1:24)
+mad_vec<-c(1:24)
+i=1
+Hour_list<-c("00:00","01:00","02:00","03:00","04:00","05:00","06:00","07:00","08:00","09:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00","17:00","18:00","19:00","20:00","21:00","22:00","23:00")
+for (k in Hour_list){
+  acc_data<-mcp_raw_test[Hour==k]
+  acc_data$predicted<-as.numeric(acc_data$predicted)
+  x<-error_test(acc_data$`PTF (USD/MWh)`,acc_data$predicted)
+  wmape_vec[i]<-x$wmape
+  mad_vec[i]<-x$mad
+
+  i=i+1
+}
+
+```
+
+
+
+
+
+
+```{r}
+
+df_hourly_acc <- data.frame(Hour=Hour_list,
+                 wmape=wmape_vec,
+                 mad=mad_vec)
+
+```
+
+# Hourly Errors
+
+```{r}
+ggplot<-df_hourly_acc  %>% ggplot(aes(x=Hour, y=wmape, fill=Hour)) + geom_col() +theme_minimal() + theme(legend.position = "None",axis.text.x = element_text(angle = 45)) +labs(x="Hour",y="wmape by hour",title="WMAPE values of ARIMA model in 2019")
+
+ggplotly(ggplot)
+```
+
+```{r}
+ggplot<-df_hourly_acc  %>% ggplot(aes(x=Hour, y=mad, fill=Hour)) + geom_col() +theme_minimal() + theme(legend.position = "None",axis.text.x = element_text(angle = 45)) +labs(x="Hour",y="mad by hour",title="MAD values of ARIMA model in 2019")
+
+ggplotly(ggplot)
+```
+
+## Seasonal Analysis
+
+
+```{r}
+mcp_raw_test
+metseasons <- c(
+  "01" = "Winter", "02" = "Winter",
+  "03" = "Spring", "04" = "Spring", "05" = "Spring",
+  "06" = "Summer", "07" = "Summer", "08" = "Summer",
+  "09" = "Fall", "10" = "Fall", "11" = "Fall",
+  "12" = "Winter"
+)
+metseasons[format(mcp_raw_test$Date, "%m")]
+mcp_raw_test2<-mcp_raw_test[,season:=metseasons[format(mcp_raw_test$Date, "%m")]]
+```
+
+```{r}
+#initially null vectors
+seasonal_mae<-c(1:4)
+seasonal_rmse<-c(1:4)
+
+#update it for each season
+acc_data<-mcp_raw_test2[season=="Fall"]
+acc_data$predicted<-as.numeric(acc_data$predicted)
+x<-error_test(acc_data$`PTF (USD/MWh)`,acc_data$predicted)
+seasonal_mae[3]<-x$mae
+seasonal_rmse[3]<-x$rmse
+
+
+df_seasonal_acc <- data.frame(Season=c("Spring","Summer","Fall","Winter"),
+                 mae=seasonal_mae,
+                 rmse=seasonal_rmse)
+df_seasonal_acc
+mae_arima_Seasonal<-c(7.935285,5.052711,3.042565	,5.951492)
+rmse_arima_Seasonal<-c(11.148063,9.238145,5.226218	,9.122256	)
+```
+
+```{r}
+ggplot<-df_seasonal_acc  %>% ggplot(aes(x=Season, y=wmape, fill=Season)) + geom_col() +theme_minimal() + theme(legend.position = "None",axis.text.x = element_text(angle = 45)) +labs(x="Season",y="wmape",title="WMAPE values of ARIMA model in 2019")
+
+ggplotly(ggplot)
+```
+
+```{r}
+ggplot<-df_seasonal_acc  %>% ggplot(aes(x=Season, y=mad, fill=Season)) + geom_col() +theme_minimal() + theme(legend.position = "None",axis.text.x = element_text(angle = 45)) +labs(x="Season",y="mad",title="MAD values of ARIMA model in 2019")
+
+ggplotly(ggplot)
+```
+
+
+# Special day analysis
+
+
+```{r}
+mcp_raw_test
+
+mcp_raw_2019<-mcp_raw[Date>="2019-01-01" & Date<"2020-01-01",]
+
+x_merged<-merge(mcp_raw_test,mcp_raw_2019)
+
+#initially null vectors
+specialday_wmape<-c(1:40)
+specialday_mad<-c(1:40)
+
+#update it for each season
+special_days=c("is_yilbasi","is_sevgililergunu","is_cocukbayrami","is_iscibayrami"   ,    "is_annelergunu","is_genclikbayrami", "is_babalargunu", "is_zaferbayrami"  ,        "is_cumhuriyet"       ,     "is_kadinlargunu" ,         "is_ramazanbayrami"       
+,"is_kurbanbayrami"   ,      "is_uzunbayram"       ,     "is_okulacilisi"  ,         "is_okulkapanisi"      ,   
+"is_semester"     ,         "is_kandil"          ,      "is_ramazanbayramilkgun"  , "is_ramazanbayramisonrasi",
+"is_kurbanbayramilkgun"   , "is_ramazangunler"     ,    "is_yilbasioncesi"      ,   "is_kurbanoncesigunler"   ,
+ "is_ramazanilkgun"   ,      "is_ramazanoncesigunler" ,  "is_arife"             ,    "is_onbestemmuz"   ,      
+"is_holiday"       ,        "is_outlierdays"      ,     "is_elections"      ,       "is_examination"   ,       
+ "is_curfew",                "is_single_day_holidays" ,  "is_school_start"      ,    "is_school_end"    ,       
+"is_school_period"   ,      "is_school_days"      ,     "is_semester_days"     ,    "is_winter_break"    ,     
+"is_summer_break")
+special_days_df<-subset(x_merged,select=-c(Date,Hour,`MCP (TL/MWh)`, `PTF (USD/MWh)`,`PTF (EUR/MWh)`, predicted,season))
+
+########
+k=1
+for(i in colnames(special_days_df)){
+  #gsub
+  acc_data<-x_merged[i==1]
+  acc_data$predicted<-as.numeric(acc_data$predicted)
+  x<-error_test(acc_data$`PTF (USD/MWh)`,acc_data$predicted)
+  specialday_wmape[k]<-x$wmape
+  specialday_mad[k]<-x$mad
+  k=k+1 
+}
+specialday_wmape
+
+acc_data<-x_merged[is_semester_days==1]
+acc_data$predicted<-as.numeric(acc_data$predicted)
+x<-error_test(acc_data$`PTF (USD/MWh)`,acc_data$predicted)
+specialday_wmape[38]<-x$wmape
+specialday_mad[38]<-x$mad
+
+
+
+
+
+specialday_wmape
+specialday_mad
+
+df_seasonal_acc <- data.frame(special_day=special_days,
+                 wmape=specialday_wmape,
+                 mad=specialday_mad)
+
+
+
+```
+
+
+```{r}
+ggplot<-ggplot(df_seasonal_acc) +
+    geom_point(aes(x = wmape, y = special_day))
+ggplotly(ggplot)
+```
+
+```{r}
+mcp_raw_test$day <- weekdays(as.Date(mcp_raw_test$Date)) #add week code column to data set
+```
+
+```{r}
+#calculate mae/rmse of each day code
+mae_vec<-c(1:7)
+rmse_vec<-c(1:7)
+
+Day_list<-c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")
+i=1
+for (k in Day_list){
+  acc_data<-mcp_raw_test[day==k]
+  acc_data$predicted<-as.numeric(acc_data$predicted)
+  x<-error_test(acc_data$`PTF (USD/MWh)`,acc_data$predicted)
+  mae_vec[i]<-x$mae
+  rmse_vec[i]<-x$rmse
+  i=i+1
+}
+mae_vec
+rmse_vec
+```
+
+
+
+```{r}
+
+mcp_raw_test$RMSE<-sqrt((mcp_raw_test$`PTF (USD/MWh)`- mcp_raw_test$predicted)^2)
+mcp_raw_test$mae<-(abs(mcp_raw_test$`PTF (USD/MWh)`- mcp_raw_test$predicted))
+
+```
+
