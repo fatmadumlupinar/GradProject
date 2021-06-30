@@ -1,0 +1,292 @@
+---
+title: "19May"
+author: "Fatma Nur Dumlupınar"
+date: "19 05 2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, ng=FALSE}
+setwd("C:/Users/fatma/Desktop/IE 492")
+
+#library
+
+library(ggplot2)
+library(dplyr)
+
+#data
+merged=read.csv("merged.csv")
+merged$Date=as.Date(merged$Date)
+
+
+dailyMCP=merged%>%
+  select(Date,MCP..TL.MWh.,fuelPrice,USD.TL, EAK.Total..MWh.,Load.Forecast..MWh.,DRP,Max..Entry.Amount.Sm3.,
+         G.Total..MWh.,Consumption..MWh. ,BilateralCQ.Consumption,Generation.Consumption,
+         EAK.Geothermal ,EAK.Wind,EAK.Dammed.Hydro,EAK.Biomass,EAK.River,
+         GProportion.Biomass,GProportion.Geot,GProportion.Solar,GProportion.Wind,GProportion.River,GProportion.DammedH )%>%
+  mutate(GProp.Renewable=GProportion.Biomass+GProportion.Geot+GProportion.Solar+GProportion.Wind+GProportion.River+GProportion.DammedH,
+         EAKProp.Renewable=(EAK.Geothermal+EAK.Wind+EAK.Dammed.Hydro+EAK.Biomass+EAK.River)/EAK.Total..MWh.)%>%
+  group_by(Date)%>%
+  summarise(dailyAvgMCP=mean(MCP..TL.MWh.),                                          
+            fuelPrice=mean(fuelPrice),
+            Daily.GProp.Renewable=mean(GProp.Renewable),
+            USD.TL=mean(USD.TL),
+            Daily.EAKProp.Renewable=mean(EAKProp.Renewable),
+            Load.Forecast..MWh.=mean(Load.Forecast..MWh.),
+            DRP=mean(DRP),
+            Max..Entry.Amount.Sm3.=mean(Max..Entry.Amount.Sm3.),
+            Consumption..MWh.=mean(Consumption..MWh.),
+            BilateralCQ.Consumption=mean(BilateralCQ.Consumption),
+            Generation.Consumption=mean(Generation.Consumption))
+#### comparison of prices
+
+mean((dailyMCP%>%filter(Date<"2018-08-01"))$dailyAvgMCP)
+lower_bound <- quantile((dailyMCP%>%filter(Date<"2018-08-01"))$dailyAvgMCP, 0.025,na.rm = T)
+upper_bound <- quantile((dailyMCP%>%filter(Date<"2018-08-01"))$dailyAvgMCP, 0.975,na.rm = T)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+
+dailyMCP=dailyMCP%>%mutate(MCPchangePercent=lag((lead(dailyAvgMCP)-dailyAvgMCP)*100/dailyAvgMCP,1),
+                           fuelP.changePercent=lag((lead(fuelPrice)-fuelPrice)*100/fuelPrice,1))
+
+ggplot(data=dailyMCP,aes(x= Date, label=Date))+
+  geom_point(aes(x=Date,y=dailyAvgMCP ,
+                 color=ifelse(MCPchangePercent>20 ,"blue",
+                              ifelse(MCPchangePercent<(-20),"green","red"))))+
+  geom_line(aes(y=fuelPrice*60))+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  scale_y_continuous(
+    name="Daily MCP Mean",
+    sec.axis =  sec_axis( ~.*(1/60),name="Daily Mean Fuel Price")
+  )
+
+```
+
+```{r message=FALSE, warning=FALSE}
+
+lower_boundFuel <- quantile((dailyMCP%>%filter(Date<"2018-08-01"))$fuelP.changePercent, 0.050,na.rm = T)
+upper_boundFuel <- quantile((dailyMCP%>%filter(Date<"2018-08-01"))$fuelP.changePercent, 0.950,na.rm = T)
+
+ggplot(data=dailyMCP%>%filter(Date<"2018-08-01"),aes(x= Date, label=Date))+
+  geom_point(aes(x=Date,y=MCPchangePercent ,
+                 color=ifelse(MCPchangePercent>20 | MCPchangePercent<(-20),"blue","red")))+
+  geom_text(aes(y= MCPchangePercent,label=ifelse(MCPchangePercent>20 | MCPchangePercent<(-20),as.character(Date),'')),
+            size=3,color="red")+
+  geom_line(aes(y=fuelP.changePercent*10),color="green")+
+  geom_text(aes(y=fuelP.changePercent*10,label=
+                  ifelse(
+                    (fuelP.changePercent>upper_boundFuel | fuelP.changePercent<lower_boundFuel),
+                    as.character(Date),'')),
+            size=2.5,angle=45)+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  scale_y_continuous(
+    name="Daily MCP Mean Change Percentage",
+    sec.axis =  sec_axis( ~.*(1/10),name="Daily Mean Fuel Price Change Percentage")
+  )
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+ggplot(data=dailyMCP%>%filter(Date>"2018-08-01",
+                              Date<"2020-01-01",
+                              MCPchangePercent<200),aes(x= Date, label=Date))+
+  geom_point(aes(x=Date,y=MCPchangePercent ,
+                 color=ifelse(MCPchangePercent>20 | MCPchangePercent<(-20),"blue","red")))+
+  geom_text(aes(y= MCPchangePercent,label=ifelse(MCPchangePercent>20 | MCPchangePercent<(-20),as.character(Date),'')),
+            size=3,color="red")+
+  geom_line(aes(y=fuelP.changePercent*10),color="green")+
+  geom_text(aes(y=fuelP.changePercent*10,label=
+                  ifelse(
+                    (fuelP.changePercent>upper_boundFuel | fuelP.changePercent<lower_boundFuel),
+                    as.character(Date),'')),
+            size=2.5,angle=45)+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  scale_y_continuous(
+    name="Daily MCP Mean Change Percentage",
+    sec.axis =  sec_axis( ~.*(1/10),name="Daily Mean Fuel Price Change Percentage")
+  )
+```
+
+```{r message=FALSE, warning=FALSE}
+ggplot(data=dailyMCP%>%filter(Date>"2020-01-01",
+                              MCPchangePercent<200),aes(x= Date, label=Date))+
+  geom_point(aes(x=Date,y=MCPchangePercent ,
+                 color=ifelse(MCPchangePercent>20 | MCPchangePercent<(-20),"blue","red")))+
+  geom_text(aes(y= MCPchangePercent,label=ifelse(MCPchangePercent>20 | MCPchangePercent<(-20),as.character(Date),'')),
+            size=3,color="red")+
+  geom_line(aes(y=fuelP.changePercent*10),color="green")+
+  geom_text(aes(y=fuelP.changePercent*10,label=
+                  ifelse(
+                    (fuelP.changePercent>upper_boundFuel | fuelP.changePercent<lower_boundFuel),
+                    as.character(Date),'')),
+            size=2.5,angle=45)+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  scale_y_continuous(
+    name="Daily MCP Mean Change Percentage",
+    sec.axis =  sec_axis( ~.*(1/10),name="Daily Mean Fuel Price Change Percentage")
+  )
+```
+
+```{r message=FALSE, warning=FALSE}
+ggplot(data=dailyMCP,aes(x= Date, label=Date))+
+  geom_point(aes(x=Date,y=dailyAvgMCP ,
+                 color=ifelse(MCPchangePercent>20 ,"blue",
+                              ifelse(MCPchangePercent<(-20),"green","red"))))+
+  geom_line(aes(y=Daily.GProp.Renewable*100))+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  geom_line(y=25,color="grey")+
+  geom_line(y=50,color="grey")+
+  geom_line(y=75,color="grey")+
+  scale_y_continuous(
+    name="Daily MCP Mean",
+    sec.axis =  sec_axis( ~.,name="Daily Renewable Energy Generation Proportion")
+  )
+
+```
+
+```{r message=FALSE, warning=FALSE}
+ggplot(data=dailyMCP,aes(x= Date, label=Date))+
+  geom_point(aes(x=Date,y=dailyAvgMCP ,
+                 color=ifelse(MCPchangePercent>20 ,"blue",
+                              ifelse(MCPchangePercent<(-20),"green","red"))))+
+  geom_line(aes(y=USD.TL*50))+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  scale_y_continuous(
+    name="Daily MCP Mean",
+    sec.axis =  sec_axis( ~.*(1/50),name="Exchange Rate(US Dollar)")
+  )
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+ggplot(data=dailyMCP%>%filter(Date>"2018-09-01"),aes(x= Date, label=Date))+
+  geom_point(aes(x=  Date,y=dailyAvgMCP ,
+                 color=ifelse(MCPchangePercent>20 ,"blue",
+                              ifelse(MCPchangePercent<(-20),"green","red"))))+
+#  geom_line(aes(x=  Date,y=dailyAvgMCP ),color="lightblue")+
+  geom_line(aes(y=DRP*0.2))+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  scale_y_continuous(
+    name="Daily MCP Mean",
+    sec.axis =  sec_axis( ~.*5,name="Natural Gas Daily Reference Price")
+  )
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+dailyMCP=dailyMCP%>%mutate(DRP.changePercent=lag((lead(DRP)-DRP)*100/DRP,1))
+
+lower_boundDRP <- quantile((dailyMCP)$DRP.changePercent, 0.050,na.rm = T)
+upper_boundDRP <- quantile((dailyMCP)$DRP.changePercent, 0.950,na.rm = T)
+
+ggplot(data=dailyMCP%>%filter(Date>"2018-09-01"),aes(x= Date, label=Date))+
+  geom_point(aes(x=Date,y=MCPchangePercent ,
+                 color=ifelse(MCPchangePercent>20 | MCPchangePercent<(-20),"blue","red")))+
+  geom_text(aes(y= MCPchangePercent,label=ifelse(MCPchangePercent>20 | MCPchangePercent<(-20),as.character(Date),'')),
+            size=3,color="red")+
+  geom_line(aes(y=DRP.changePercent*10),color="green")+
+  geom_text(aes(y=DRP.changePercent*10,label=
+                  ifelse(
+                    (DRP.changePercent>upper_boundDRP | DRP.changePercent<lower_boundDRP),
+                    as.character(Date),'')),
+            size=2.5,angle=45)+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  scale_y_continuous(
+    name="Daily MCP Mean Change Percentage",
+    sec.axis =  sec_axis( ~.*(0.1),name="Daily DRP Change Percentage")
+  )
+write.csv(dailyMCP,"dailyMCP.csv")
+```
+
+```{r message=FALSE, warning=FALSE}
+ggplot(data=dailyMCP%>%filter(Date>"2018-09-01",
+                              MCPchangePercent<200),aes(x= Date, label=Date))+
+  geom_point(aes(x=Date,y=MCPchangePercent ,
+                 color=ifelse(MCPchangePercent>20 | MCPchangePercent<(-20),"blue","red")))+
+  geom_text(aes(y= MCPchangePercent,label=ifelse(MCPchangePercent>20 | MCPchangePercent<(-20),as.character(Date),'')),
+            size=3,color="red")+
+  geom_line(aes(y=DRP.changePercent*10),color="green")+
+  geom_text(aes(y=DRP.changePercent*10,label=
+                  ifelse(
+                    (DRP.changePercent>upper_boundDRP | DRP.changePercent<lower_boundDRP),
+                    as.character(Date),'')),
+            size=2.5,angle=45)+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  scale_y_continuous(
+    name="Daily MCP Mean Change Percentage",
+    sec.axis =  sec_axis( ~.*(0.1),name="Daily DRP Change Percentage")
+  )
+```
+
+
+
+```{r message=FALSE, warning=FALSE}
+ggplot(data=dailyMCP%>%filter(Date>"2018-09-01"),aes(x= Date, label=Date))+
+  geom_point(aes(x=Date,y=dailyAvgMCP ,
+                 color=ifelse(MCPchangePercent>20 ,"blue",
+                              ifelse(MCPchangePercent<(-20),"green","red"))))+
+  #  geom_line(aes(x=  Date,y=dailyAvgMCP ),color="lightblue")+
+  geom_line(aes(y=Daily.EAKProp.Renewable*200))+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  scale_y_continuous(
+    name="Daily MCP Mean",
+    sec.axis =  sec_axis( ~.*(1/200),name="Daily Renewable EAK(EmreAmadeKapasite) Proportion(~planned production)")
+  )
+
+```
+
+
+```{r message=FALSE, warning=FALSE}
+ggplot(data=dailyMCP%>%filter(Date>"2018-09-01"),aes(x= Date, label=Date))+
+  geom_point(aes(x=Date,y=dailyAvgMCP ,
+                 color=ifelse(MCPchangePercent>20 ,"blue",
+                              ifelse(MCPchangePercent<(-20),"green","red"))))+
+  #  geom_line(aes(x=  Date,y=dailyAvgMCP ),color="lightblue")+
+  geom_line(aes(y=Load.Forecast..MWh.*(1/200)))+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  scale_y_continuous(
+    name="Daily MCP Mean",
+    sec.axis =  sec_axis( ~.*200,name="Load Forecast(~consumption forecast)")
+  )
+
+```
+
+```{r message=FALSE, warning=FALSE}
+ggplot(data=dailyMCP%>%filter(Date>"2018-09-01"),aes(x= Date, label=Date))+
+  geom_point(aes(x=Date,y=dailyAvgMCP ,
+                 color=ifelse(MCPchangePercent>20 ,"blue",
+                              ifelse(MCPchangePercent<(-20),"green","red"))))+
+  #  geom_line(aes(x=  Date,y=dailyAvgMCP ),color="lightblue")+
+  geom_line(aes(y=BilateralCQ.Consumption*100))+
+  geom_line(y=100,color="grey")+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  scale_y_continuous(
+    name="Daily MCP Mean",
+    sec.axis =  sec_axis( ~.*(0.01),name="Bilateral Contract Quantity / Consumption")
+  )
+
+
+```
+
+
+
